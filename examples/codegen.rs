@@ -140,11 +140,20 @@ fn parse_traits(src: &str) -> Vec<TraitDef> {
 					continue;
 				}
 				if l.starts_with("fn ") {
-					if let Some(m) = parse_method(l, pending_cfg.take(), name.clone()) {
+					// rustfmt puts a `where` clause on its own line, so a signature may
+					// span several lines. Join until `;` (declaration) or `{` (default
+					// body) closes it; parse_method drops the `where` either way.
+					let mut signature = l.to_string();
+					while !signature.ends_with(';') && !signature.ends_with('{') && i + 1 < lines.len() {
+						i += 1;
+						signature.push(' ');
+						signature.push_str(lines[i].trim());
+					}
+					if let Some(m) = parse_method(&signature, pending_cfg.take(), name.clone()) {
 						methods.push(m);
 					}
 					// Skip multi-line default impl body via brace counting.
-					if l.ends_with('{') {
+					if signature.ends_with('{') {
 						let mut depth = 1usize;
 						while depth > 0 && i + 1 < lines.len() {
 							i += 1;
