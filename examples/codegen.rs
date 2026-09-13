@@ -18,8 +18,7 @@
 //!
 //! ## Parser constraints
 //!
-//!   - the `fn` line up to (but excluding) any `where` is the captured signature;
-//!     it must fit on one line (lifetime/generics included)
+//!   - the `fn` line up to (but excluding) any `where` is the captured signature
 //!   - `where` clauses are dropped from the forwarder — both the inline form
 //!     (`... -> R where T: Bound;`) and the multi-line form (clause on following
 //!     lines). A forwarder never needs them: `Self` is concrete in the inherent
