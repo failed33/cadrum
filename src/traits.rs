@@ -87,12 +87,14 @@
 //!   `+` を含む bound が where 句にあっても supertrait 抽出を汚染しない
 //!
 //! メソッドシグネチャ:
-//! - fn シグネチャは1行に収めること（`where` 句・ライフタイム・ジェネリクス引数も同じ行）
+//! - fn シグネチャは複数行でよい。`;`（宣言）か `{`（default impl）で終わる行まで
+//!   連結してから解析するので、rustfmt が `where` 句を改行しても壊れない
 //! - default impl はサポート。本体が1行に収まる場合はそのまま、複数行の場合も
 //!   `{...}` ブロックを brace 深さでスキップする
-//! - ライフタイム引数 `<'a, 'b>` および `where Self: 'a` のような句はそのまま保持される。
-//!   `Self` は inherent impl 文脈では具象型と等価なので置換せず残す（`Self::Elem` のような
-//!   関連型のみ事前に concrete type へ置換される）
+//! - ライフタイム引数 `<'a, 'b>` は保持されるが `where` 句は捨てられる。inherent impl
+//!   では `Self` が具象型なので `Self::Edge: 'a` 等は自動で満たされる。forwarder に
+//!   本当に要る bound（loft の `S: IntoIterator<Item = I>`）はジェネリクス列に直接書く
+//! - `Self` は置換せず残す（`Self::Elem` のような関連型のみ concrete type へ置換される）
 //! - `Self::Elem` は impl 対象の具象型へ置換される。`Self::Face` / `Self::Edge` /
 //!   `Self::Solid` はそれぞれ `Face` / `Edge` / `Solid` へ置換され、`lib.rs` の
 //!   バックエンド再エクスポートで解決される
@@ -351,17 +353,17 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	/// line(c, a)]` traces the same triangle but reports `false`, even though
 	/// `Solid::extrude` accepts it — OCCT reverses edges to connect them, this
 	/// does not.
-	// rustfmt would break `where` onto its own line, hiding the opening brace from
-	// examples/codegen.rs (see the one-line signature rule in this file's header).
-	#[rustfmt::skip]
-	fn is_loop<'a>(edges: impl IntoIterator<Item = &'a Self>) -> bool where Self: 'a {
+	fn is_loop<'a>(edges: impl IntoIterator<Item = &'a Self>) -> bool
+	where
+		Self: 'a,
+	{
 		let mut edges = edges.into_iter();
 		let Some(first) = edges.next() else { return false };
 		let mut end = first.end_point();
 		for edge in edges {
 			match end.distance(edge.start_point()) <= Self::precision_distance() {
-				true=> end = edge.end_point(),
-				false=> return false
+				true => end = edge.end_point(),
+				false => return false,
 			}
 		}
 		end.distance(first.start_point()) <= Self::precision_distance()
