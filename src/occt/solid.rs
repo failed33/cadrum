@@ -150,19 +150,39 @@ impl std::fmt::Debug for Solid {
 	}
 }
 
-/// Split `profile` into loops and flatten them with null-edge sentinels, the
-/// form `make_extrude` / `make_revolve` read.
+/// Split `profile` into closed loops and flatten them with null-edge sentinels,
+/// the form `make_extrude` / `make_revolve` read. Consecutive edges must meet
+/// within `Edge::precision_distance`; a loop closes when an edge returns to its start.
 fn loops_to_ffi<'a>(profile: impl IntoIterator<Item = &'a Edge>) -> Result<cxx::UniquePtr<cxx::CxxVector<ffi::TopoDS_Edge>>, Error> {
+	let tolerance = Edge::precision_distance();
 	let mut edges = ffi::edge_vec_new();
-	for (index, group) in Edge::loops(profile)?.into_iter().enumerate() {
-		if index > 0 {
-			ffi::edge_vec_push_null(edges.pin_mut());
-		}
-		for e in group {
-			ffi::edge_vec_push(edges.pin_mut(), &e.inner);
-		}
+	let mut first_loop = true;
+	// (start of the loop being traced, end of its last edge, edges so far); None between loops.
+	let mut open: Option<(DVec3, DVec3, usize)> = None;
+	for edge in profile {
+		let (start, count) = match open {
+			Some((start, end, count)) => {
+				let gap = end.distance(edge.start_point());
+				if gap > tolerance {
+					return Err(Error::Edge(format!("profile: edge starting at {:?} is {gap} away from the previous edge's end", edge.start_point())));
+				}
+				(start, count)
+			}
+			None => {
+				if !first_loop {
+					ffi::edge_vec_push_null(edges.pin_mut());
+				}
+				first_loop = false;
+				(edge.start_point(), 0)
+			}
+		};
+		ffi::edge_vec_push(edges.pin_mut(), &edge.inner);
+		open = (edge.end_point().distance(start) > tolerance).then_some((start, edge.end_point(), count + 1));
 	}
-	Ok(edges)
+	match open {
+		None => Ok(edges),
+		Some((_, _, count)) => Err(Error::Edge(format!("profile: {count} trailing edges do not close a loop"))),
+	}
 }
 
 impl SolidStruct for Solid {

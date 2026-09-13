@@ -98,3 +98,10 @@ fn extrude_outer_winding_does_not_matter() {
 fn extrude_rejects_a_zero_direction() {
 	assert!(Solid::extrude(&plate(4.0), DVec3::ZERO).is_err(), "MakePrism would otherwise return a degenerate solid");
 }
+
+#[test]
+fn extrude_rejects_a_gap_inside_a_loop() {
+	let (a, b, c) = (DVec3::ZERO, DVec3::X * 4.0, DVec3::Y * 4.0);
+	let broken = [Edge::line(a, b).unwrap(), Edge::line(b + DVec3::Z, c).unwrap(), Edge::line(c, a).unwrap()];
+	assert!(Solid::extrude(&broken, DVec3::Z).is_err(), "an edge that does not meet the previous one must not be silently bridged");
+}

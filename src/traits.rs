@@ -360,32 +360,6 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 		edges.try_fold(start, |end, edge| (end.distance(edge.start_point()) <= tolerance).then(|| edge.end_point())).is_some_and(|end| end.distance(start) <= tolerance)
 	}
 
-	/// Split `edges` into consecutive closed loops. A profile with holes is the
-	/// loops concatenated — `[outer, hole].concat()`. Input order is kept; which
-	/// loop bounds the material is left to the consumer, e.g. `Solid::extrude`.
-	///
-	/// Edge direction must run head-to-tail, as in [`is_loop`](EdgeStruct::is_loop).
-	/// Fails with [`Error::Edge`] on an edge that does not meet the previous one,
-	/// or on trailing edges that never close.
-	fn loops<'a>(edges: impl IntoIterator<Item = &'a Self>) -> Result<Vec<Vec<&'a Self>>, Error>
-	where
-		Self: 'a,
-	{
-		let tolerance = Self::precision_distance();
-		let (mut out, mut group) = (Vec::new(), Vec::<&'a Self>::new());
-		for edge in edges {
-			let gap = group.last().map_or(0.0, |previous| previous.end_point().distance(edge.start_point()));
-			if gap > tolerance {
-				return Err(Error::Edge(format!("loops: edge starting at {:?} is {gap} away from the previous edge's end", edge.start_point())));
-			}
-			group.push(edge);
-			if edge.end_point().distance(group[0].start_point()) <= tolerance {
-				out.push(std::mem::take(&mut group));
-			}
-		}
-		group.is_empty().then_some(out).ok_or_else(|| Error::Edge(format!("loops: {} trailing edges do not close a loop", group.len())))
-	}
-
 	/// Construct a single helical edge on a cylindrical surface centered at
 	/// the world origin.
 	///
@@ -593,10 +567,11 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	fn clean(&self) -> Result<Self, Error>;
 	/// Extrude a closed profile along a direction vector to form a solid.
 	///
-	/// `profile` is split by [`Edge::loops`](EdgeStruct::loops): the first loop
-	/// bounds the solid and any further loop becomes a hole, so a plate with a
-	/// bore is `[outer, bore].concat()`. Loop winding does not matter — each hole
-	/// is oriented to remove material whichever way it was traced.
+	/// `profile` is split into closed loops wherever an edge returns to the
+	/// loop's start: the first loop bounds the solid and any further loop
+	/// becomes a hole, so a plate with a bore is `[outer, bore].concat()`. Loop
+	/// winding does not matter — each hole is oriented to remove material
+	/// whichever way it was traced.
 	///
 	/// Internally builds a face from the loops and uses `BRepPrimAPI_MakePrism`.
 	/// Fails if the profile is empty, does not split into closed loops, a hole
@@ -607,7 +582,7 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 
 	/// Revolve a closed profile about an axis to form a solid.
 	///
-	/// `profile` is split by [`Edge::loops`](EdgeStruct::loops) exactly as in
+	/// `profile` is split into closed loops exactly as in
 	/// [`extrude`](SolidStruct::extrude); further loops become holes and winding
 	/// does not matter. `(axis_origin, axis_direction, angle)` is the triple
 	/// `Transform::rotate` takes — radians, a negative angle turns the other way —

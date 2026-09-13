@@ -75,9 +75,6 @@ impl Edge {
 	pub fn is_loop<'a>(edges: impl IntoIterator<Item = &'a crate::Edge>) -> bool {
 		<Self as crate::traits::EdgeStruct>::is_loop(edges)
 	}
-	pub fn loops<'a>(edges: impl IntoIterator<Item = &'a crate::Edge>) -> Result<Vec<Vec<&'a crate::Edge>>, Error> {
-		<Self as crate::traits::EdgeStruct>::loops(edges)
-	}
 	pub fn helix(radius: f64, pitch: f64, height: f64, axis: DVec3, x_ref: DVec3) -> Result<crate::Edge, Error> {
 		<Self as crate::traits::EdgeStruct>::helix(radius, pitch, height, axis, x_ref)
 	}
