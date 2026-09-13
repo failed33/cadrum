@@ -42,12 +42,7 @@ fn build_heart() -> Result<Solid, Error> {
 
 fn main() -> Result<(), Error> {
 	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap();
-	let result=[
-		build_oblique_cylinder()?.color("#f1c8b0").translate(DVec3::X * 10.0),
-		build_l_beam()?.color("#b0f1c8").translate(DVec3::X * 20.0),
-		build_heart()?.color("#f1b0b0").translate(DVec3::X * 30.0),
-		build_plate_with_bore()?.color("#d4b0f1").translate(DVec3::X * 40.0)
-	];
+	let result = [build_oblique_cylinder()?.color("#f1c8b0").translate(DVec3::X * 10.0), build_l_beam()?.color("#b0f1c8").translate(DVec3::X * 20.0), build_heart()?.color("#f1b0b0").translate(DVec3::X * 30.0), build_plate_with_bore()?.color("#d4b0f1").translate(DVec3::X * 40.0)];
 
 	Solid::write_step(&result, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
 
