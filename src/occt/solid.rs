@@ -86,6 +86,143 @@ pub struct Solid {
 }
 
 impl Solid {
+	pub fn loft_with_tolerance<'a, I: IntoIterator<Item = &'a Edge>, S: IntoIterator<Item = I>>(sections: S, ruled: bool, tolerance: f64) -> Result<Self, Error>
+	where
+		Edge: 'a,
+	{
+		let _guard = LOFT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+		let mut all_edges = ffi::edge_vec_new();
+		let mut section_count = 0usize;
+
+		for sec in sections {
+			if section_count > 0 {
+				ffi::edge_vec_push_null(all_edges.pin_mut());
+			}
+			let mut count = 0u32;
+			for edge in sec {
+				ffi::edge_vec_push(all_edges.pin_mut(), &edge.inner);
+				count += 1;
+			}
+			if count == 0 {
+				return Err(Error::Loft(format!("loft: section {} is empty (each section must contain ≥1 edge)", section_count)));
+			}
+			section_count += 1;
+		}
+
+		if section_count < 2 {
+			return Err(Error::Loft(format!("loft: need ≥2 sections, got {} (a single section has no thickness to skin across)", section_count)));
+		}
+
+		let shape = ffi::make_loft(&all_edges, ruled, tolerance);
+		if shape.is_null() {
+			return Err(Error::Loft(format!(
+				"loft: OCCT BRepOffsetAPI_ThruSections failed (sections={}, ruled={}). \
+				 Check that each section forms a valid closed wire and sections are not coplanar.",
+				section_count, ruled
+			)));
+		}
+		Ok(Solid::new(
+			shape,
+			#[cfg(feature = "color")]
+			std::collections::HashMap::new(),
+			Default::default(),
+		))
+	}
+
+	pub fn shell_with_tolerance<'a>(&self, thickness: f64, open_faces: impl IntoIterator<Item = &'a Face>, tolerance: f64) -> Result<Self, Error> {
+		let mut face_vec = ffi::face_vec_new();
+		for f in open_faces {
+			ffi::face_vec_push(face_vec.pin_mut(), &f.inner);
+		}
+		let mut history: Vec<u64> = Default::default();
+		let shape = ffi::builder_thick_solid(&self.inner, &face_vec, thickness, tolerance, &mut history);
+		if shape.is_null() {
+			return Err(Error::Shell(format!("thickness={thickness} incompatible with the geometry, or self-intersecting offset ({} open face(s))", face_vec.len())));
+		}
+		#[cfg(feature = "color")]
+		let colormap = self.remap_colormap(&shape, &history);
+		Ok(Solid::new(
+			shape,
+			#[cfg(feature = "color")]
+			colormap,
+			history,
+		))
+	}
+
+	pub fn box_checked(size: [f64; 3]) -> Result<Self, Error> {
+		let shape = ffi::make_box_checked(size[0], size[1], size[2]).map_err(|error| Error::Validation(error.to_string()))?;
+		Ok(Self::new(
+			shape,
+			#[cfg(feature = "color")]
+			Default::default(),
+			Default::default(),
+		))
+	}
+	pub fn sphere_checked(radius: f64) -> Result<Self, Error> {
+		let shape = ffi::make_sphere_checked(radius).map_err(|error| Error::Validation(error.to_string()))?;
+		Ok(Self::new(
+			shape,
+			#[cfg(feature = "color")]
+			Default::default(),
+			Default::default(),
+		))
+	}
+	pub fn cylinder_checked(radius: f64, height: f64) -> Result<Self, Error> {
+		let shape = ffi::make_cylinder_checked(radius, height).map_err(|error| Error::Validation(error.to_string()))?;
+		Ok(Self::new(
+			shape,
+			#[cfg(feature = "color")]
+			Default::default(),
+			Default::default(),
+		))
+	}
+
+	pub fn affine(&self, matrix: &[f64; 12]) -> Result<(Self, Vec<(u64, u64)>), Error> {
+		let mut history = Vec::new();
+		let inner = ffi::transform_affine(&self.inner, matrix, &mut history).map_err(|error| Error::Validation(error.to_string()))?;
+		Ok((
+			Self::new(
+				inner,
+				#[cfg(feature = "color")]
+				Default::default(),
+				Default::default(),
+			),
+			history.chunks_exact(2).map(|pair| (pair[0], pair[1])).collect(),
+		))
+	}
+
+	pub fn is_valid(&self) -> Result<bool, Error> {
+		ffi::shape_is_valid(&self.inner).map_err(|error| Error::Validation(error.to_string()))
+	}
+
+	pub fn sweep_law(profile: &[Edge], spine: &[Edge], stations: &[f64], scales: &[f64], tolerance: f64) -> Result<(Self, Vec<u64>, Vec<u64>), Error> {
+		let mut profile_vec = ffi::edge_vec_new();
+		for edge in profile {
+			ffi::edge_vec_push(profile_vec.pin_mut(), &edge.inner);
+		}
+		let mut spine_vec = ffi::edge_vec_new();
+		for edge in spine {
+			ffi::edge_vec_push(spine_vec.pin_mut(), &edge.inner);
+		}
+		let mut start_edges = Vec::new();
+		let mut end_edges = Vec::new();
+		let shape = ffi::sweep_law(&profile_vec, &spine_vec, stations, scales, tolerance, &mut start_edges, &mut end_edges).map_err(|error| Error::Sweep(error.to_string()))?;
+		if shape.is_null() {
+			return Err(Error::Sweep("null sweep result".into()));
+		}
+		Ok((
+			Self::new(
+				shape,
+				#[cfg(feature = "color")]
+				Default::default(),
+				Default::default(),
+			),
+			start_edges,
+			end_edges,
+		))
+	}
+
 	/// Create a `Solid` from a `TopoDS_Shape`.
 	///
 	/// # Panics
@@ -274,23 +411,7 @@ impl SolidStruct for Solid {
 	// ==================== Shell ====================
 
 	fn shell<'a>(&self, thickness: f64, open_faces: impl IntoIterator<Item = &'a Face>) -> Result<Self, Error> {
-		let mut face_vec = ffi::face_vec_new();
-		for f in open_faces {
-			ffi::face_vec_push(face_vec.pin_mut(), &f.inner);
-		}
-		let mut history: Vec<u64> = Default::default();
-		let shape = ffi::builder_thick_solid(&self.inner, &face_vec, thickness, &mut history);
-		if shape.is_null() {
-			return Err(Error::Shell(format!("thickness={thickness} incompatible with the geometry, or self-intersecting offset ({} open face(s))", face_vec.len())));
-		}
-		#[cfg(feature = "color")]
-		let colormap = self.remap_colormap(&shape, &history);
-		Ok(Solid::new(
-			shape,
-			#[cfg(feature = "color")]
-			colormap,
-			history,
-		))
+		self.shell_with_tolerance(thickness, open_faces, 1e-6)
 	}
 
 	// ==================== Fillet / Chamfer ====================
@@ -365,44 +486,7 @@ impl SolidStruct for Solid {
 	where
 		Edge: 'a,
 	{
-		let _guard = LOFT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-		let mut all_edges = ffi::edge_vec_new();
-		let mut section_count = 0usize;
-
-		for sec in sections {
-			if section_count > 0 {
-				ffi::edge_vec_push_null(all_edges.pin_mut());
-			}
-			let mut count = 0u32;
-			for edge in sec {
-				ffi::edge_vec_push(all_edges.pin_mut(), &edge.inner);
-				count += 1;
-			}
-			if count == 0 {
-				return Err(Error::Loft(format!("loft: section {} is empty (each section must contain ≥1 edge)", section_count)));
-			}
-			section_count += 1;
-		}
-
-		if section_count < 2 {
-			return Err(Error::Loft(format!("loft: need ≥2 sections, got {} (a single section has no thickness to skin across)", section_count)));
-		}
-
-		let shape = ffi::make_loft(&all_edges, ruled);
-		if shape.is_null() {
-			return Err(Error::Loft(format!(
-				"loft: OCCT BRepOffsetAPI_ThruSections failed (sections={}, ruled={}). \
-				 Check that each section forms a valid closed wire and sections are not coplanar.",
-				section_count, ruled
-			)));
-		}
-		Ok(Solid::new(
-			shape,
-			#[cfg(feature = "color")]
-			std::collections::HashMap::new(),
-			Default::default(),
-		))
+		Self::loft_with_tolerance(sections, ruled, 1e-7)
 	}
 
 	// ==================== Sew ====================

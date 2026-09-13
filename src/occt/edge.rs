@@ -9,6 +9,46 @@ pub struct Edge {
 }
 
 impl Edge {
+	/// Interpolate with an explicit OCCT coincidence tolerance.
+	pub fn bspline_with_tolerance<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd, tolerance: f64) -> Result<Self, Error> {
+		let pts: Vec<DVec3> = points.into_iter().copied().collect();
+
+		// 最低点数チェック: Periodic は cubic 周期 spline の構造上 ≥ 3、その他は ≥ 2。
+		let min_required = match end {
+			BSplineEnd::Periodic => 3,
+			BSplineEnd::NotAKnot | BSplineEnd::Clamped { .. } => 2,
+		};
+		if pts.len() < min_required {
+			return Err(Error::Edge(format!("bspline: need ≥{} points for {:?}, got {}", min_required, end, pts.len())));
+		}
+
+		// Periodic では先頭と末尾が一致してはならない。OCCT は周期性を基底関数に
+		// 組み込むので、ユーザーが点を重複させると行列が特異化して失敗する。
+		// 自動除去はせず Error::Edge で誤用を明示する (AGENTS.md "誤解 vs 手間" 方針)。
+		if matches!(end, BSplineEnd::Periodic) {
+			let first = pts.first().expect("checked above");
+			let last = pts.last().expect("checked above");
+			if first == last {
+				return Err(Error::Edge(format!("bspline(Periodic): first and last points coincide ({first:?}); periodicity is encoded in the basis, do not duplicate the closing point")));
+			}
+		}
+
+		// FFI 用に flat な xyz 列にパック。
+		let coords: Vec<f64> = pts.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+
+		// BSplineEnd を (kind, start_tangent, end_tangent) にエンコード。
+		// kind: 0 = Periodic, 1 = NotAKnot, 2 = Clamped。
+		// 接線ベクトルは Clamped 以外では使われない (C++ 側で無視)。
+		let (kind, sx, sy, sz, ex, ey, ez) = match end {
+			BSplineEnd::Periodic => (0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+			BSplineEnd::NotAKnot => (1u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+			BSplineEnd::Clamped { start: s, end: e } => (2u32, s.x, s.y, s.z, e.x, e.y, e.z),
+		};
+
+		let inner = ffi::make_bspline_edge(&coords, kind, sx, sy, sz, ex, ey, ez, tolerance);
+		Edge::try_from_ffi(inner, format!("bspline: OCCT GeomAPI_Interpolate failed ({} points, end={end:?})", pts.len()))
+	}
+
 	/// Wrap a FFI-returned `TopoDS_Edge` into `Result<Edge, Error>`, checking
 	/// for null. This is the **only** constructor for `Edge` from FFI: all
 	/// call sites must go through this function so that no null `TopoDS_Edge`
@@ -129,42 +169,7 @@ impl EdgeStruct for Edge {
 	}
 
 	fn bspline<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd) -> Result<Self, Error> {
-		let pts: Vec<DVec3> = points.into_iter().copied().collect();
-
-		// 最低点数チェック: Periodic は cubic 周期 spline の構造上 ≥ 3、その他は ≥ 2。
-		let min_required = match end {
-			BSplineEnd::Periodic => 3,
-			BSplineEnd::NotAKnot | BSplineEnd::Clamped { .. } => 2,
-		};
-		if pts.len() < min_required {
-			return Err(Error::Edge(format!("bspline: need ≥{} points for {:?}, got {}", min_required, end, pts.len())));
-		}
-
-		// Periodic では先頭と末尾が一致してはならない。OCCT は周期性を基底関数に
-		// 組み込むので、ユーザーが点を重複させると行列が特異化して失敗する。
-		// 自動除去はせず Error::Edge で誤用を明示する (AGENTS.md "誤解 vs 手間" 方針)。
-		if matches!(end, BSplineEnd::Periodic) {
-			let first = pts.first().expect("checked above");
-			let last = pts.last().expect("checked above");
-			if first == last {
-				return Err(Error::Edge(format!("bspline(Periodic): first and last points coincide ({first:?}); periodicity is encoded in the basis, do not duplicate the closing point")));
-			}
-		}
-
-		// FFI 用に flat な xyz 列にパック。
-		let coords: Vec<f64> = pts.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
-
-		// BSplineEnd を (kind, start_tangent, end_tangent) にエンコード。
-		// kind: 0 = Periodic, 1 = NotAKnot, 2 = Clamped。
-		// 接線ベクトルは Clamped 以外では使われない (C++ 側で無視)。
-		let (kind, sx, sy, sz, ex, ey, ez) = match end {
-			BSplineEnd::Periodic => (0u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-			BSplineEnd::NotAKnot => (1u32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-			BSplineEnd::Clamped { start: s, end: e } => (2u32, s.x, s.y, s.z, e.x, e.y, e.z),
-		};
-
-		let inner = ffi::make_bspline_edge(&coords, kind, sx, sy, sz, ex, ey, ez);
-		Edge::try_from_ffi(inner, format!("bspline: OCCT GeomAPI_Interpolate failed ({} points, end={end:?})", pts.len()))
+		Self::bspline_with_tolerance(points, end, 1e-7)
 	}
 }
 

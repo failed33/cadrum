@@ -24,6 +24,13 @@ struct RustWriter;
 // Forward-declare shared structs (defined by cxx in ffi.rs.h)
 struct MeshData;
 
+bool shape_is_valid(const TopoDS_Shape& shape);
+std::unique_ptr<TopoDS_Shape> sweep_law(
+    const std::vector<TopoDS_Edge>& profile,
+    const std::vector<TopoDS_Edge>& spine,
+    rust::Slice<const double> stations, rust::Slice<const double> scales,
+    double tolerance, rust::Vec<uint64_t>& start_edges, rust::Vec<uint64_t>& end_edges);
+
 // ==================== Shape I/O (streambuf callback) ====================
 
 // Plain STEP I/O — only built without FEATURE_COLOR; with color, STEP goes
@@ -43,6 +50,10 @@ bool write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer);
 std::unique_ptr<TopoDS_Shape> make_half_space(
     double ox, double oy, double oz,
     double nx, double ny, double nz);
+
+std::unique_ptr<TopoDS_Shape> make_box_checked(double x, double y, double z);
+std::unique_ptr<TopoDS_Shape> make_sphere_checked(double radius);
+std::unique_ptr<TopoDS_Shape> make_cylinder_checked(double radius, double height);
 
 std::unique_ptr<TopoDS_Shape> make_box(
     double x1, double y1, double z1,
@@ -107,6 +118,7 @@ std::unique_ptr<TopoDS_Shape> builder_thick_solid(
     const TopoDS_Shape& solid,
     const std::vector<TopoDS_Face>& open_faces,
     double thickness,
+    double tolerance,
     rust::Vec<uint64_t>& out_history);
 
 // Fillet the given edges of `solid` with a uniform radius using
@@ -143,6 +155,8 @@ std::unique_ptr<TopoDS_Shape> builder_chamfer(
 // topology via BRepBuilderAPI_Transform; OCCT does not expose a face
 // derivation table, so out_history is intentionally absent and the Rust
 // side clears Solid::history (colormap is remapped by face order instead).
+
+std::unique_ptr<TopoDS_Shape> transform_affine(const TopoDS_Shape& shape, rust::Slice<const double> matrix, rust::Vec<uint64_t>& edge_history);
 
 std::unique_ptr<TopoDS_Shape> transform_translate(
     const TopoDS_Shape& shape, double tx, double ty, double tz);
@@ -265,7 +279,7 @@ std::unique_ptr<TopoDS_Edge> make_bspline_edge(
     rust::Slice<const double> coords,
     uint32_t end_kind,
     double sx, double sy, double sz,
-    double ex, double ey, double ez);
+    double ex, double ey, double ez, double tolerance);
 
 // Edge query helpers.
 void edge_endpoints(const TopoDS_Edge& edge,
@@ -350,7 +364,7 @@ void shape_vec_push(std::vector<TopoDS_Shape>& v, const TopoDS_Shape& s);
 // `ruled=true` connects adjacent sections with straight ruled panels.
 std::unique_ptr<TopoDS_Shape> make_loft(
     const std::vector<TopoDS_Edge>& all_edges,
-    bool ruled);
+    bool ruled, double tolerance);
 
 // Sew (stitch) free faces into a single closed shell and upgrade it to a
 // solid via BRepBuilderAPI_MakeSolid. The sewn result must contain exactly

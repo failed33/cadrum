@@ -488,7 +488,7 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	fn iter_edge(&self) -> impl Iterator<Item = &Self::Edge> + '_;
 	/// Iterate this solid's faces. Backends may cache the result internally.
 	fn iter_face(&self) -> impl Iterator<Item = &Self::Face> + '_;
-	/// Iterate face-derivation pairs `[post_id, src_id]` from the most recent
+	/// Iterate face/edge derivation pairs `[post_id, src_id]` from the most recent
 	/// boolean operation that produced this Solid (or its source chain, while
 	/// it stays through translate/rotate/color). Empty after primitive/builder
 	/// construction, I/O read, scale/mirror, or Clone.
