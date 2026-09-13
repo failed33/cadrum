@@ -150,6 +150,21 @@ impl std::fmt::Debug for Solid {
 	}
 }
 
+/// Split `profile` into loops and flatten them with null-edge sentinels, the
+/// form `make_extrude` / `make_revolve` read.
+fn loops_to_ffi<'a>(profile: impl IntoIterator<Item = &'a Edge>) -> Result<cxx::UniquePtr<cxx::CxxVector<ffi::TopoDS_Edge>>, Error> {
+	let mut edges = ffi::edge_vec_new();
+	for (index, group) in Edge::loops(profile)?.into_iter().enumerate() {
+		if index > 0 {
+			ffi::edge_vec_push_null(edges.pin_mut());
+		}
+		for e in group {
+			ffi::edge_vec_push(edges.pin_mut(), &e.inner);
+		}
+	}
+	Ok(edges)
+}
+
 impl SolidStruct for Solid {
 	type Edge = Edge;
 	type Face = Face;
@@ -255,18 +270,24 @@ impl SolidStruct for Solid {
 	// ==================== Extrude ====================
 
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Edge>, dir: DVec3) -> Result<Self, Error> {
-		let mut profile_vec = ffi::edge_vec_new();
-		for (index, edges) in Edge::loops(profile)?.into_iter().enumerate() {
-			if index > 0 {
-				ffi::edge_vec_push_null(profile_vec.pin_mut());
-			}
-			for e in edges {
-				ffi::edge_vec_push(profile_vec.pin_mut(), &e.inner);
-			}
-		}
-		let shape = ffi::make_extrude(&profile_vec, dir.x, dir.y, dir.z);
+		let edges = loops_to_ffi(profile)?;
+		let shape = ffi::make_extrude(&edges, dir.x, dir.y, dir.z);
 		if shape.is_null() {
 			return Err(Error::Extrude);
+		}
+		Ok(Solid::new(
+			shape,
+			#[cfg(feature = "color")]
+			std::collections::HashMap::new(),
+			Default::default(),
+		))
+	}
+
+	fn revolve<'a>(profile: impl IntoIterator<Item = &'a Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<Self, Error> {
+		let edges = loops_to_ffi(profile)?;
+		let shape = ffi::make_revolve(&edges, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle);
+		if shape.is_null() {
+			return Err(Error::Revolve(format!("angle={angle} about {axis_direction:?} through {axis_origin:?} did not produce a solid")));
 		}
 		Ok(Solid::new(
 			shape,

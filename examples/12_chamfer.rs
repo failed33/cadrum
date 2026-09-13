@@ -1,4 +1,4 @@
-//! Demo of `Solid::chamfer_edges` — mirror of `10_fillet.rs` using bevels:
+//! Demo of `Solid::chamfer_edges` — mirror of `11_fillet.rs` using bevels:
 //! - All 12 cube edges chamfered uniformly (beveled cube)
 //! - Only top 4 edges chamfered (soft top, sharp base)
 //! - Cylinder top circular edge chamfered (coin with beveled rim)
