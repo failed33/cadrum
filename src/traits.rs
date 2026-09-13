@@ -87,7 +87,6 @@
 //!   `+` を含む bound が where 句にあっても supertrait 抽出を汚染しない
 //!
 //! メソッドシグネチャ:
-//! - fn シグネチャは1行に収めること（`where` 句・ライフタイム・ジェネリクス引数も同じ行）
 //! - default impl はサポート。本体が1行に収まる場合はそのまま、複数行の場合も
 //!   `{...}` ブロックを brace 深さでスキップする
 //! - ライフタイム引数 `<'a, 'b>` および `where Self: 'a` のような句はそのまま保持される。
@@ -325,8 +324,6 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	fn start_tangent(&self) -> DVec3;
 	/// Unit tangent at the end point, in the curve's native parameter direction.
 	fn end_tangent(&self) -> DVec3;
-	/// Whether the edge's underlying geometry is closed (e.g. a full circle).
-	fn is_closed(&self) -> bool;
 	/// Polyline approximation of the edge within `tolerance`, as ordered points.
 	fn approximation_segments(&self, tessellation: Tessellation) -> Vec<DVec3>;
 	/// Project `p` onto the edge and return `(closest_point, unit_tangent)`.
@@ -334,6 +331,40 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	/// zero vector on a degenerate edge (a sphere pole or cone apex, which
 	/// collapses to a single point); callers detect it via `tangent.length() == 0`.
 	fn project(&self, p: DVec3) -> (DVec3, DVec3);
+
+	/// Distance below which two points are the same point, for every edge this
+	/// backend builds. Wraps OCCT's `Precision::Confusion()` (1e-7).
+	///
+	/// cadrum exposes no way to alter a vertex's tolerance, so this single
+	/// value also governs whether OCCT accepts two edges as connected.
+	fn precision_distance() -> f64;
+
+	/// Whether `edges` form one closed loop — STEP's `edge_loop`.
+	///
+	/// Consecutive edges must meet within
+	/// [`precision_distance`](EdgeStruct::precision_distance), and so must the
+	/// last and the first. An empty sequence is not a loop; a single closed
+	/// edge (a circle) is.
+	///
+	/// Edge direction must already run head-to-tail. `[line(a, b), line(c, b),
+	/// line(c, a)]` traces the same triangle but reports `false`, even though
+	/// `Solid::extrude` accepts it — OCCT reverses edges to connect them, this
+	/// does not.
+	fn is_loop<'a>(edges: impl IntoIterator<Item = &'a Self>) -> bool
+	where
+		Self: 'a,
+	{
+		let mut edges = edges.into_iter();
+		let Some(first) = edges.next() else { return false };
+		let mut end = first.end_point();
+		for edge in edges {
+			match end.distance(edge.start_point()) <= Self::precision_distance() {
+				true => end = edge.end_point(),
+				false => return false,
+			}
+		}
+		end.distance(first.start_point()) <= Self::precision_distance()
+	}
 
 	/// Construct a single helical edge on a cylindrical surface centered at
 	/// the world origin.
