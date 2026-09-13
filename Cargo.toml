@@ -71,6 +71,10 @@ name = "05_extrude"
 required-features = ["color"]
 
 [[example]]
+name = "06_revolve"
+required-features = ["color"]
+
+[[example]]
 name = "07_loft"
 
 [[example]]

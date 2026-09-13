@@ -4,6 +4,7 @@
 //! - **Oblique cylinder**: circle extruded at a steep angle
 //! - **L-beam**: L-shaped polygon extruded along Z
 //! - **Heart**: BSpline heart-shaped profile extruded along Z
+//! - **Plate with a bore**: square outer loop plus a circular hole, concatenated into one profile
 
 use cadrum::{BSplineEnd, DVec3, Edge, Error, Solid};
 
@@ -23,6 +24,14 @@ fn build_oblique_cylinder() -> Result<Solid, Error> {
 fn build_l_beam() -> Result<Solid, Error> {
 	let profile = Edge::polygon(&[DVec3::new(0.0, 0.0, 0.0), DVec3::new(4.0, 0.0, 0.0), DVec3::new(4.0, 1.0, 0.0), DVec3::new(1.0, 1.0, 0.0), DVec3::new(1.0, 3.0, 0.0), DVec3::new(0.0, 3.0, 0.0)])?;
 	Solid::extrude(&profile, DVec3::Z * 12.0)
+}
+
+/// Square plate with a round bore: `Edge::loops` splits the profile, the first
+/// loop bounds the solid and the second becomes the hole.
+fn build_plate_with_bore() -> Result<Solid, Error> {
+	let outer = Edge::polygon(&[DVec3::new(-4.0, -3.0, 0.0), DVec3::new(4.0, -3.0, 0.0), DVec3::new(4.0, 3.0, 0.0), DVec3::new(-4.0, 3.0, 0.0)])?;
+	let bore = Edge::circle(1.5, DVec3::Z)?;
+	Solid::extrude(&[outer, vec![bore]].concat(), DVec3::Z * 2.0)
 }
 
 /// Heart-shaped BSpline profile extruded along Z.
@@ -50,8 +59,9 @@ fn main() -> Result<(), Error> {
 	let oblique = build_oblique_cylinder()?.color("#f1c8b0").translate(DVec3::X * 10.0);
 	let l_beam = build_l_beam()?.color("#b0f1c8").translate(DVec3::X * 20.0);
 	let heart = build_heart()?.color("#f1b0b0").translate(DVec3::X * 30.0);
+	let plate = build_plate_with_bore()?.color("#d4b0f1").translate(DVec3::X * 40.0);
 
-	let result = [box_solid, oblique, l_beam, heart];
+	let result = [box_solid, oblique, l_beam, heart, plate];
 
 	Solid::write_step(&result, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
 
