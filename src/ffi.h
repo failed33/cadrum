@@ -311,6 +311,14 @@ std::unique_ptr<TopoDS_Shape> make_extrude(
     const std::vector<TopoDS_Edge>& profile_edges,
     double dx, double dy, double dz);
 
+// Revolve the same sentinel-separated profile about the axis through
+// (ox,oy,oz) along (dx,dy,dz) by `angle` radians using BRepPrimAPI_MakeRevol.
+std::unique_ptr<TopoDS_Shape> make_revolve(
+    const std::vector<TopoDS_Edge>& profile_edges,
+    double ox, double oy, double oz,
+    double dx, double dy, double dz,
+    double angle);
+
 // Sweep a closed profile wire (built from `profile_edges`) along a spine
 // wire (built from `spine_edges`) using BRepOffsetAPI_MakePipeShell. The
 // profile is wrapped in a face before sweeping so the result is a Solid.

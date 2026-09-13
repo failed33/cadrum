@@ -605,6 +605,22 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	where
 		Self::Edge: 'a;
 
+	/// Revolve a closed profile about an axis to form a solid.
+	///
+	/// `profile` is split by [`Edge::loops`](EdgeStruct::loops) exactly as in
+	/// [`extrude`](SolidStruct::extrude); further loops become holes and winding
+	/// does not matter. `(axis_origin, axis_direction, angle)` is the triple
+	/// `Transform::rotate` takes — radians, a negative angle turns the other way —
+	/// so the profile sweeps through that very rotation. A profile touching the
+	/// axis is fine (a half disc about its diameter is a sphere); one crossing it
+	/// self-intersects and fails. Uses `BRepPrimAPI_MakeRevol`.
+	///
+	/// Fails with [`Error::Revolve`] on an empty or non-loop profile, a zero
+	/// axis, an angle of zero or beyond a full turn, or a hole outside the outer loop.
+	fn revolve<'a>(profile: impl IntoIterator<Item = &'a Self::Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<Self, Error>
+	where
+		Self::Edge: 'a;
+
 	/// Hollow this solid into a thin-walled shell by removing `open_faces`
 	/// (they become openings) and building a wall of signed `thickness` along
 	/// each remaining face. Wraps OCCT's `BRepOffsetAPI_MakeThickSolid`.

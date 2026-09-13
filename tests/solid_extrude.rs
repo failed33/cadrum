@@ -93,3 +93,8 @@ fn extrude_outer_winding_does_not_matter() {
 		assert!((solid.volume() - expected).abs() < TOL, "volume={} expected={expected}", solid.volume());
 	}
 }
+
+#[test]
+fn extrude_rejects_a_zero_direction() {
+	assert!(Solid::extrude(&plate(4.0), DVec3::ZERO).is_err(), "MakePrism would otherwise return a degenerate solid");
+}
