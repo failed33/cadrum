@@ -354,16 +354,10 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	where
 		Self: 'a,
 	{
-		let mut edges = edges.into_iter();
-		let Some(first) = edges.next() else { return false };
-		let mut end = first.end_point();
-		for edge in edges {
-			match end.distance(edge.start_point()) <= Self::precision_distance() {
-				true => end = edge.end_point(),
-				false => return false,
-			}
-		}
-		end.distance(first.start_point()) <= Self::precision_distance()
+		let mut edges = edges.into_iter().peekable();
+		let Some(start) = edges.peek().map(|first| first.start_point()) else { return false };
+		let tolerance = Self::precision_distance();
+		edges.try_fold(start, |end, edge| (end.distance(edge.start_point()) <= tolerance).then(|| edge.end_point())).is_some_and(|end| end.distance(start) <= tolerance)
 	}
 
 	/// Construct a single helical edge on a cylindrical surface centered at
@@ -571,11 +565,34 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	/// repair small inconsistencies). Wraps `ShapeUpgrade_UnifySameDomain`
 	/// + cleanup. Failure is reported as `Error::Clean`.
 	fn clean(&self) -> Result<Self, Error>;
-	/// Extrude a closed profile wire along a direction vector to form a solid.
+	/// Extrude a closed profile along a direction vector to form a solid.
 	///
-	/// Internally builds a face from the wire and uses `BRepPrimAPI_MakePrism`.
-	/// Fails if the profile is empty, not closed, or the direction is zero-length.
+	/// `profile` is split into closed loops wherever an edge returns to the
+	/// loop's start: the first loop bounds the solid and any further loop
+	/// becomes a hole, so a plate with a bore is `[outer, bore].concat()`. Loop
+	/// winding does not matter — each hole is oriented to remove material
+	/// whichever way it was traced.
+	///
+	/// Internally builds a face from the loops and uses `BRepPrimAPI_MakePrism`.
+	/// Fails if the profile is empty, does not split into closed loops, a hole
+	/// lies outside the outer loop, or the direction is zero-length.
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Self::Edge>, dir: DVec3) -> Result<Self, Error>
+	where
+		Self::Edge: 'a;
+
+	/// Revolve a closed profile about an axis to form a solid.
+	///
+	/// `profile` is split into closed loops exactly as in
+	/// [`extrude`](SolidStruct::extrude); further loops become holes and winding
+	/// does not matter. `(axis_origin, axis_direction, angle)` is the triple
+	/// `Transform::rotate` takes — radians, a negative angle turns the other way —
+	/// so the profile sweeps through that very rotation. A profile touching the
+	/// axis is fine (a half disc about its diameter is a sphere); one crossing it
+	/// self-intersects and fails. Uses `BRepPrimAPI_MakeRevol`.
+	///
+	/// Fails with [`Error::Revolve`] on an empty or non-loop profile, a zero
+	/// axis, an angle of zero or beyond a full turn, or a hole outside the outer loop.
+	fn revolve<'a>(profile: impl IntoIterator<Item = &'a Self::Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<Self, Error>
 	where
 		Self::Edge: 'a;
 

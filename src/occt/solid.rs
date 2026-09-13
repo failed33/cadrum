@@ -1,5 +1,5 @@
 use super::compound::CompoundShape;
-use super::edge::Edge;
+use super::edge::{loops_to_ffi, Edge};
 use super::face::Face;
 use super::ffi;
 use crate::common::boolean::Boolean;
@@ -255,20 +255,29 @@ impl SolidStruct for Solid {
 	// ==================== Extrude ====================
 
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Edge>, dir: DVec3) -> Result<Self, Error> {
-		let mut profile_vec = ffi::edge_vec_new();
-		for e in profile {
-			ffi::edge_vec_push(profile_vec.pin_mut(), &e.inner);
+		let edges = loops_to_ffi(profile)?;
+		match ffi::make_extrude(&edges, dir.x, dir.y, dir.z) {
+			shape if shape.is_null() => Err(Error::Extrude),
+			shape => Ok(Solid::new(
+				shape,
+				#[cfg(feature = "color")]
+				std::collections::HashMap::new(),
+				Default::default(),
+			)),
 		}
-		let shape = ffi::make_extrude(&profile_vec, dir.x, dir.y, dir.z);
-		if shape.is_null() {
-			return Err(Error::Extrude);
+	}
+
+	fn revolve<'a>(profile: impl IntoIterator<Item = &'a Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<Self, Error> {
+		let edges = loops_to_ffi(profile)?;
+		match ffi::make_revolve(&edges, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle) {
+			shape if shape.is_null() => Err(Error::Revolve(format!("angle={angle} about {axis_direction:?} through {axis_origin:?} did not produce a solid"))),
+			shape => Ok(Solid::new(
+				shape,
+				#[cfg(feature = "color")]
+				std::collections::HashMap::new(),
+				Default::default(),
+			)),
 		}
-		Ok(Solid::new(
-			shape,
-			#[cfg(feature = "color")]
-			std::collections::HashMap::new(),
-			Default::default(),
-		))
 	}
 
 	// ==================== Shell ====================

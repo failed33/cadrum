@@ -209,6 +209,9 @@ impl Solid {
 	pub fn extrude<'a>(profile: impl IntoIterator<Item = &'a Edge>, dir: DVec3) -> Result<crate::Solid, Error> {
 		<Self as crate::traits::SolidStruct>::extrude(profile, dir)
 	}
+	pub fn revolve<'a>(profile: impl IntoIterator<Item = &'a Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<crate::Solid, Error> {
+		<Self as crate::traits::SolidStruct>::revolve(profile, axis_origin, axis_direction, angle)
+	}
 	pub fn shell<'a>(&self, thickness: f64, open_faces: impl IntoIterator<Item = &'a Face>) -> Result<crate::Solid, Error> {
 		<Self as crate::traits::SolidStruct>::shell(self, thickness, open_faces)
 	}

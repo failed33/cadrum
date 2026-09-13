@@ -13,12 +13,12 @@ cadrum is a Rust CAD crate using statically-linked, headless [OpenCASCADE][occt]
 <table>
 <tr><th width='25%'><a href='#primitives'>primitives</a></th><th width='25%'><a href='#write-read'>write read</a></th><th width='25%'><a href='#transform'>transform</a></th><th width='25%'><a href='#boolean'>boolean</a></th></tr>
 <tr><td width='25%'><a href='#primitives'><img src='https://lzpel.github.io/cadrum/01_primitives.png' width='100%' height='auto' alt='primitives'/></a></td><td width='25%'><a href='#write-read'><img src='https://lzpel.github.io/cadrum/02_write_read.png' width='100%' height='auto' alt='write read'/></a></td><td width='25%'><a href='#transform'><img src='https://lzpel.github.io/cadrum/03_transform.png' width='100%' height='auto' alt='transform'/></a></td><td width='25%'><a href='#boolean'><img src='https://lzpel.github.io/cadrum/04_boolean.png' width='100%' height='auto' alt='boolean'/></a></td></tr>
-<tr><th width='25%'><a href='#extrude'>extrude</a></th><th width='25%'><a href='#loft'>loft</a></th><th width='25%'><a href='#sweep'>sweep</a></th><th width='25%'><a href='#shell'>shell</a></th></tr>
-<tr><td width='25%'><a href='#extrude'><img src='https://lzpel.github.io/cadrum/05_extrude.png' width='100%' height='auto' alt='extrude'/></a></td><td width='25%'><a href='#loft'><img src='https://lzpel.github.io/cadrum/06_loft.png' width='100%' height='auto' alt='loft'/></a></td><td width='25%'><a href='#sweep'><img src='https://lzpel.github.io/cadrum/07_sweep.png' width='100%' height='auto' alt='sweep'/></a></td><td width='25%'><a href='#shell'><img src='https://lzpel.github.io/cadrum/08_shell.png' width='100%' height='auto' alt='shell'/></a></td></tr>
-<tr><th width='25%'><a href='#bspline'>bspline</a></th><th width='25%'><a href='#fillet'>fillet</a></th><th width='25%'><a href='#chamfer'>chamfer</a></th><th width='25%'><a href='#offset'>offset</a></th></tr>
-<tr><td width='25%'><a href='#bspline'><img src='https://lzpel.github.io/cadrum/09_bspline.png' width='100%' height='auto' alt='bspline'/></a></td><td width='25%'><a href='#fillet'><img src='https://lzpel.github.io/cadrum/10_fillet.png' width='100%' height='auto' alt='fillet'/></a></td><td width='25%'><a href='#chamfer'><img src='https://lzpel.github.io/cadrum/11_chamfer.png' width='100%' height='auto' alt='chamfer'/></a></td><td width='25%'><a href='#offset'><img src='https://lzpel.github.io/cadrum/12_offset.png' width='100%' height='auto' alt='offset'/></a></td></tr>
-<tr><th width='25%'><a href='#sew'>sew</a></th><th width='25%'><a href='#moebius'>moebius</a></th><th width='25%'><a href='#multiview'>multiview</a></th><th width='25%'></th></tr>
-<tr><td width='25%'><a href='#sew'><img src='https://lzpel.github.io/cadrum/13_sew.png' width='100%' height='auto' alt='sew'/></a></td><td width='25%'><a href='#moebius'><img src='https://lzpel.github.io/cadrum/14_moebius.png' width='100%' height='auto' alt='moebius'/></a></td><td width='25%'><a href='#multiview'><img src='https://lzpel.github.io/cadrum/15_multiview.png' width='100%' height='auto' alt='multiview'/></a></td><td width='25%'></td></tr>
+<tr><th width='25%'><a href='#extrude'>extrude</a></th><th width='25%'><a href='#revolve'>revolve</a></th><th width='25%'><a href='#loft'>loft</a></th><th width='25%'><a href='#sweep'>sweep</a></th></tr>
+<tr><td width='25%'><a href='#extrude'><img src='https://lzpel.github.io/cadrum/05_extrude.png' width='100%' height='auto' alt='extrude'/></a></td><td width='25%'><a href='#revolve'><img src='https://lzpel.github.io/cadrum/06_revolve.png' width='100%' height='auto' alt='revolve'/></a></td><td width='25%'><a href='#loft'><img src='https://lzpel.github.io/cadrum/07_loft.png' width='100%' height='auto' alt='loft'/></a></td><td width='25%'><a href='#sweep'><img src='https://lzpel.github.io/cadrum/08_sweep.png' width='100%' height='auto' alt='sweep'/></a></td></tr>
+<tr><th width='25%'><a href='#shell'>shell</a></th><th width='25%'><a href='#bspline'>bspline</a></th><th width='25%'><a href='#fillet'>fillet</a></th><th width='25%'><a href='#chamfer'>chamfer</a></th></tr>
+<tr><td width='25%'><a href='#shell'><img src='https://lzpel.github.io/cadrum/09_shell.png' width='100%' height='auto' alt='shell'/></a></td><td width='25%'><a href='#bspline'><img src='https://lzpel.github.io/cadrum/10_bspline.png' width='100%' height='auto' alt='bspline'/></a></td><td width='25%'><a href='#fillet'><img src='https://lzpel.github.io/cadrum/11_fillet.png' width='100%' height='auto' alt='fillet'/></a></td><td width='25%'><a href='#chamfer'><img src='https://lzpel.github.io/cadrum/12_chamfer.png' width='100%' height='auto' alt='chamfer'/></a></td></tr>
+<tr><th width='25%'><a href='#offset'>offset</a></th><th width='25%'><a href='#sew'>sew</a></th><th width='25%'><a href='#moebius'>moebius</a></th><th width='25%'><a href='#multiview'>multiview</a></th></tr>
+<tr><td width='25%'><a href='#offset'><img src='https://lzpel.github.io/cadrum/13_offset.png' width='100%' height='auto' alt='offset'/></a></td><td width='25%'><a href='#sew'><img src='https://lzpel.github.io/cadrum/14_sew.png' width='100%' height='auto' alt='sew'/></a></td><td width='25%'><a href='#moebius'><img src='https://lzpel.github.io/cadrum/15_moebius.png' width='100%' height='auto' alt='moebius'/></a></td><td width='25%'><a href='#multiview'><img src='https://lzpel.github.io/cadrum/16_multiview.png' width='100%' height='auto' alt='multiview'/></a></td></tr>
 </table>
 
 ## What is cadrum
@@ -362,19 +362,8 @@ cargo run --example 05_extrude
 
 ```rust,no_run
 //! Demo of `Solid::extrude`: push a closed 2D profile along a direction vector.
-//!
-//! - **Box**: square polygon extruded along Z
-//! - **Oblique cylinder**: circle extruded at a steep angle
-//! - **L-beam**: L-shaped polygon extruded along Z
-//! - **Heart**: BSpline heart-shaped profile extruded along Z
 
 use cadrum::{BSplineEnd, DVec3, Edge, Error, Solid};
-
-/// Square polygon → box (simplest extrude).
-fn build_box() -> Result<Solid, Error> {
-	let profile = Edge::polygon(&[DVec3::new(0.0, 0.0, 0.0), DVec3::new(5.0, 0.0, 0.0), DVec3::new(5.0, 5.0, 0.0), DVec3::new(0.0, 5.0, 0.0)])?;
-	Solid::extrude(&profile, DVec3::Z * 8.0)
-}
 
 /// Circle extruded at a steep angle → oblique cylinder.
 fn build_oblique_cylinder() -> Result<Solid, Error> {
@@ -386,6 +375,14 @@ fn build_oblique_cylinder() -> Result<Solid, Error> {
 fn build_l_beam() -> Result<Solid, Error> {
 	let profile = Edge::polygon(&[DVec3::new(0.0, 0.0, 0.0), DVec3::new(4.0, 0.0, 0.0), DVec3::new(4.0, 1.0, 0.0), DVec3::new(1.0, 1.0, 0.0), DVec3::new(1.0, 3.0, 0.0), DVec3::new(0.0, 3.0, 0.0)])?;
 	Solid::extrude(&profile, DVec3::Z * 12.0)
+}
+
+/// Square plate with a round bore: `Edge::loops` splits the profile, the first
+/// loop bounds the solid and the second becomes the hole.
+fn build_plate_with_bore() -> Result<Solid, Error> {
+	let outer = Edge::polygon(&[DVec3::new(-4.0, -3.0, 0.0), DVec3::new(4.0, -3.0, 0.0), DVec3::new(4.0, 3.0, 0.0), DVec3::new(-4.0, 3.0, 0.0)])?;
+	let bore = Edge::circle(1.5, DVec3::Z)?;
+	Solid::extrude(&[outer, vec![bore]].concat(), DVec3::Z * 2.0)
 }
 
 /// Heart-shaped BSpline profile extruded along Z.
@@ -408,13 +405,7 @@ fn build_heart() -> Result<Solid, Error> {
 
 fn main() -> Result<(), Error> {
 	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap();
-
-	let box_solid = build_box()?.color("#b0d4f1");
-	let oblique = build_oblique_cylinder()?.color("#f1c8b0").translate(DVec3::X * 10.0);
-	let l_beam = build_l_beam()?.color("#b0f1c8").translate(DVec3::X * 20.0);
-	let heart = build_heart()?.color("#f1b0b0").translate(DVec3::X * 30.0);
-
-	let result = [box_solid, oblique, l_beam, heart];
+	let result = [build_oblique_cylinder()?.color("#f1c8b0").translate(DVec3::X * 10.0), build_l_beam()?.color("#b0f1c8").translate(DVec3::X * 20.0), build_heart()?.color("#f1b0b0").translate(DVec3::X * 30.0), build_plate_with_bore()?.color("#d4b0f1").translate(DVec3::X * 40.0)];
 
 	Solid::write_step(&result, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
 
@@ -435,12 +426,79 @@ Output: [05_extrude.png](https://lzpel.github.io/cadrum/05_extrude.png) | [05_ex
 
 <img src='https://lzpel.github.io/cadrum/05_extrude.svg' alt='05_extrude' width='360'/>
 
+#### Revolve
+
+Demo of `Solid::revolve`: sweep a closed profile about an axis.
+
+```sh
+cargo run --example 06_revolve
+```
+
+```rust,no_run
+//! Demo of `Solid::revolve`: sweep a closed profile about an axis.
+//!
+//! - **Pipe**: rectangle in the XZ plane turned a full circle about Z
+//! - **Sphere**: half disc turned about its own diameter — a profile may touch the axis
+//! - **Partial**: the same rectangle turned three quarters of the way, showing the angle
+//! - **Channel**: rectangle with a circular hole → ring with a hidden toroidal channel
+
+use cadrum::{DVec3, Edge, Error, Solid};
+use std::f64::consts::TAU;
+
+/// Rectangle `x ∈ [x0, x1]`, `z ∈ [z0, z1]` in the XZ plane, the plane that contains the Z axis.
+fn rect(x0: f64, x1: f64, z0: f64, z1: f64) -> Result<Vec<Edge>, Error> {
+	Edge::polygon(&[DVec3::new(x0, 0.0, z0), DVec3::new(x1, 0.0, z0), DVec3::new(x1, 0.0, z1), DVec3::new(x0, 0.0, z1)])
+}
+
+/// Full turn → pipe (simplest revolve).
+fn build_pipe() -> Result<Solid, Error> {
+	Solid::revolve(&rect(3.0, 5.0, 0.0, 4.0)?, DVec3::ZERO, DVec3::Z, TAU)
+}
+
+/// Half disc about its diameter → sphere. The straight edge lies on the axis.
+fn build_sphere() -> Result<Solid, Error> {
+	let r = 3.0;
+	let profile = [Edge::arc_3pts(DVec3::new(0.0, 0.0, -r), DVec3::new(r, 0.0, 0.0), DVec3::new(0.0, 0.0, r))?, Edge::line(DVec3::new(0.0, 0.0, r), DVec3::new(0.0, 0.0, -r))?];
+	Solid::revolve(&profile, DVec3::ZERO, DVec3::Z, TAU)
+}
+
+/// Three quarters of a turn → open ring segment.
+fn build_partial() -> Result<Solid, Error> {
+	Solid::revolve(&rect(3.0, 5.0, 0.0, 4.0)?, DVec3::ZERO, DVec3::Z, TAU * 0.75)
+}
+
+/// Rectangle with a circular hole: the hole sweeps into a toroidal channel inside the ring.
+fn build_channel() -> Result<Solid, Error> {
+	let hole = Edge::circle(1.0, DVec3::Y)?.translate(DVec3::new(4.0, 0.0, 2.0));
+	Solid::revolve(&[rect(2.0, 6.0, 0.0, 4.0)?, vec![hole]].concat(), DVec3::ZERO, DVec3::Z, -TAU * 0.6)
+}
+
+fn main() -> Result<(), Error> {
+	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap();
+	let result = [build_pipe()?.color("#b0d4f1"), build_sphere()?.color("#f1c8b0").translate(DVec3::X * 14.0), build_partial()?.color("#b0f1c8").translate(DVec3::X * 28.0), build_channel()?.color("#d4b0f1").translate(DVec3::X * 42.0)];
+	Solid::write_step(&result, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
+	let mesh = Solid::mesh(&result, Default::default())?;
+	let scene = mesh.scene(Default::default());
+	scene.write_svg(&mut std::fs::File::create(format!("{example_name}.svg")).unwrap())?;
+	scene.write_png([640, 640], &mut std::fs::File::create(format!("{example_name}.png")).unwrap())?;
+	mesh.write_stl(&mut std::fs::File::create(format!("{example_name}.stl")).unwrap())?;
+	mesh.write_gltf_binary(&mut std::fs::File::create(format!("{example_name}.glb")).unwrap())?;
+	println!("wrote {example_name}.step / {example_name}.svg / {example_name}.png");
+	Ok(())
+}
+
+```
+
+Output: [06_revolve.png](https://lzpel.github.io/cadrum/06_revolve.png) | [06_revolve.step](https://lzpel.github.io/cadrum/06_revolve.step) | [06_revolve.glb](https://lzpel.github.io/cadrum/06_revolve.glb) | [06_revolve.stl](https://lzpel.github.io/cadrum/06_revolve.stl) | [06_revolve.svg](https://lzpel.github.io/cadrum/06_revolve.svg)
+
+<img src='https://lzpel.github.io/cadrum/06_revolve.svg' alt='06_revolve' width='360'/>
+
 #### Loft
 
 Demo of `Solid::loft`: skin a solid through cross-section wires.
 
 ```sh
-cargo run --example 06_loft
+cargo run --example 07_loft
 ```
 
 ```rust,no_run
@@ -537,16 +595,16 @@ fn main() -> Result<(), Error> {
 
 ```
 
-Output: [06_loft.png](https://lzpel.github.io/cadrum/06_loft.png) | [06_loft.step](https://lzpel.github.io/cadrum/06_loft.step) | [06_loft.glb](https://lzpel.github.io/cadrum/06_loft.glb) | [06_loft.stl](https://lzpel.github.io/cadrum/06_loft.stl) | [06_loft.svg](https://lzpel.github.io/cadrum/06_loft.svg)
+Output: [07_loft.png](https://lzpel.github.io/cadrum/07_loft.png) | [07_loft.step](https://lzpel.github.io/cadrum/07_loft.step) | [07_loft.glb](https://lzpel.github.io/cadrum/07_loft.glb) | [07_loft.stl](https://lzpel.github.io/cadrum/07_loft.stl) | [07_loft.svg](https://lzpel.github.io/cadrum/07_loft.svg)
 
-<img src='https://lzpel.github.io/cadrum/06_loft.svg' alt='06_loft' width='360'/>
+<img src='https://lzpel.github.io/cadrum/07_loft.svg' alt='07_loft' width='360'/>
 
 #### Sweep
 
 Sweep showcase: M2 screw (helix spine) + U-shaped pipe (line+arc+line spine)
 
 ```sh
-cargo run --example 07_sweep
+cargo run --example 08_sweep
 ```
 
 ```rust,no_run
@@ -688,16 +746,16 @@ fn main() -> Result<(), Error> {
 
 ```
 
-Output: [07_sweep.png](https://lzpel.github.io/cadrum/07_sweep.png) | [07_sweep.step](https://lzpel.github.io/cadrum/07_sweep.step) | [07_sweep.glb](https://lzpel.github.io/cadrum/07_sweep.glb) | [07_sweep.stl](https://lzpel.github.io/cadrum/07_sweep.stl) | [07_sweep.svg](https://lzpel.github.io/cadrum/07_sweep.svg)
+Output: [08_sweep.png](https://lzpel.github.io/cadrum/08_sweep.png) | [08_sweep.step](https://lzpel.github.io/cadrum/08_sweep.step) | [08_sweep.glb](https://lzpel.github.io/cadrum/08_sweep.glb) | [08_sweep.stl](https://lzpel.github.io/cadrum/08_sweep.stl) | [08_sweep.svg](https://lzpel.github.io/cadrum/08_sweep.svg)
 
-<img src='https://lzpel.github.io/cadrum/07_sweep.svg' alt='07_sweep' width='360'/>
+<img src='https://lzpel.github.io/cadrum/08_sweep.svg' alt='08_sweep' width='360'/>
 
 #### Shell
 
 Demo of `Solid::shell`:
 
 ```sh
-cargo run --example 08_shell
+cargo run --example 09_shell
 ```
 
 ```rust,no_run
@@ -759,16 +817,16 @@ fn main() -> Result<(), Error> {
 
 ```
 
-Output: [08_shell.png](https://lzpel.github.io/cadrum/08_shell.png) | [08_shell.step](https://lzpel.github.io/cadrum/08_shell.step) | [08_shell.glb](https://lzpel.github.io/cadrum/08_shell.glb) | [08_shell.stl](https://lzpel.github.io/cadrum/08_shell.stl) | [08_shell.svg](https://lzpel.github.io/cadrum/08_shell.svg)
+Output: [09_shell.png](https://lzpel.github.io/cadrum/09_shell.png) | [09_shell.step](https://lzpel.github.io/cadrum/09_shell.step) | [09_shell.glb](https://lzpel.github.io/cadrum/09_shell.glb) | [09_shell.stl](https://lzpel.github.io/cadrum/09_shell.stl) | [09_shell.svg](https://lzpel.github.io/cadrum/09_shell.svg)
 
-<img src='https://lzpel.github.io/cadrum/08_shell.svg' alt='08_shell' width='360'/>
+<img src='https://lzpel.github.io/cadrum/09_shell.svg' alt='09_shell' width='360'/>
 
 #### Bspline
 
 
 
 ```sh
-cargo run --example 09_bspline
+cargo run --example 10_bspline
 ```
 
 ```rust,no_run
@@ -827,16 +885,16 @@ fn main() -> Result<(), cadrum::Error> {
 
 ```
 
-Output: [09_bspline.png](https://lzpel.github.io/cadrum/09_bspline.png) | [09_bspline.step](https://lzpel.github.io/cadrum/09_bspline.step) | [09_bspline.glb](https://lzpel.github.io/cadrum/09_bspline.glb) | [09_bspline.stl](https://lzpel.github.io/cadrum/09_bspline.stl) | [09_bspline.svg](https://lzpel.github.io/cadrum/09_bspline.svg)
+Output: [10_bspline.png](https://lzpel.github.io/cadrum/10_bspline.png) | [10_bspline.step](https://lzpel.github.io/cadrum/10_bspline.step) | [10_bspline.glb](https://lzpel.github.io/cadrum/10_bspline.glb) | [10_bspline.stl](https://lzpel.github.io/cadrum/10_bspline.stl) | [10_bspline.svg](https://lzpel.github.io/cadrum/10_bspline.svg)
 
-<img src='https://lzpel.github.io/cadrum/09_bspline.svg' alt='09_bspline' width='360'/>
+<img src='https://lzpel.github.io/cadrum/10_bspline.svg' alt='10_bspline' width='360'/>
 
 #### Fillet
 
 Demo of `Solid::fillet_edges`:
 
 ```sh
-cargo run --example 10_fillet
+cargo run --example 11_fillet
 ```
 
 ```rust,no_run
@@ -889,20 +947,20 @@ fn main() -> Result<(), Error> {
 
 ```
 
-Output: [10_fillet.png](https://lzpel.github.io/cadrum/10_fillet.png) | [10_fillet.step](https://lzpel.github.io/cadrum/10_fillet.step) | [10_fillet.glb](https://lzpel.github.io/cadrum/10_fillet.glb) | [10_fillet.stl](https://lzpel.github.io/cadrum/10_fillet.stl) | [10_fillet.svg](https://lzpel.github.io/cadrum/10_fillet.svg)
+Output: [11_fillet.png](https://lzpel.github.io/cadrum/11_fillet.png) | [11_fillet.step](https://lzpel.github.io/cadrum/11_fillet.step) | [11_fillet.glb](https://lzpel.github.io/cadrum/11_fillet.glb) | [11_fillet.stl](https://lzpel.github.io/cadrum/11_fillet.stl) | [11_fillet.svg](https://lzpel.github.io/cadrum/11_fillet.svg)
 
-<img src='https://lzpel.github.io/cadrum/10_fillet.svg' alt='10_fillet' width='360'/>
+<img src='https://lzpel.github.io/cadrum/11_fillet.svg' alt='11_fillet' width='360'/>
 
 #### Chamfer
 
-Demo of `Solid::chamfer_edges` — mirror of `10_fillet.rs` using bevels:
+Demo of `Solid::chamfer_edges` — mirror of `11_fillet.rs` using bevels:
 
 ```sh
-cargo run --example 11_chamfer
+cargo run --example 12_chamfer
 ```
 
 ```rust,no_run
-//! Demo of `Solid::chamfer_edges` — mirror of `10_fillet.rs` using bevels:
+//! Demo of `Solid::chamfer_edges` — mirror of `11_fillet.rs` using bevels:
 //! - All 12 cube edges chamfered uniformly (beveled cube)
 //! - Only top 4 edges chamfered (soft top, sharp base)
 //! - Cylinder top circular edge chamfered (coin with beveled rim)
@@ -951,16 +1009,16 @@ fn main() -> Result<(), Error> {
 
 ```
 
-Output: [11_chamfer.png](https://lzpel.github.io/cadrum/11_chamfer.png) | [11_chamfer.step](https://lzpel.github.io/cadrum/11_chamfer.step) | [11_chamfer.glb](https://lzpel.github.io/cadrum/11_chamfer.glb) | [11_chamfer.stl](https://lzpel.github.io/cadrum/11_chamfer.stl) | [11_chamfer.svg](https://lzpel.github.io/cadrum/11_chamfer.svg)
+Output: [12_chamfer.png](https://lzpel.github.io/cadrum/12_chamfer.png) | [12_chamfer.step](https://lzpel.github.io/cadrum/12_chamfer.step) | [12_chamfer.glb](https://lzpel.github.io/cadrum/12_chamfer.glb) | [12_chamfer.stl](https://lzpel.github.io/cadrum/12_chamfer.stl) | [12_chamfer.svg](https://lzpel.github.io/cadrum/12_chamfer.svg)
 
-<img src='https://lzpel.github.io/cadrum/11_chamfer.svg' alt='11_chamfer' width='360'/>
+<img src='https://lzpel.github.io/cadrum/12_chamfer.svg' alt='12_chamfer' width='360'/>
 
 #### Offset
 
 Signed surface offset: one drilled block grown by +3, the original, and shrunk by -3 side by side — every face moves along its normal, so the hole shrinks as the body grows.
 
 ```sh
-cargo run --example 12_offset
+cargo run --example 13_offset
 ```
 
 ```rust,no_run
@@ -995,16 +1053,16 @@ fn main() -> Result<(), cadrum::Error> {
 
 ```
 
-Output: [12_offset.png](https://lzpel.github.io/cadrum/12_offset.png) | [12_offset.step](https://lzpel.github.io/cadrum/12_offset.step) | [12_offset.glb](https://lzpel.github.io/cadrum/12_offset.glb) | [12_offset.stl](https://lzpel.github.io/cadrum/12_offset.stl) | [12_offset.svg](https://lzpel.github.io/cadrum/12_offset.svg)
+Output: [13_offset.png](https://lzpel.github.io/cadrum/13_offset.png) | [13_offset.step](https://lzpel.github.io/cadrum/13_offset.step) | [13_offset.glb](https://lzpel.github.io/cadrum/13_offset.glb) | [13_offset.stl](https://lzpel.github.io/cadrum/13_offset.stl) | [13_offset.svg](https://lzpel.github.io/cadrum/13_offset.svg)
 
-<img src='https://lzpel.github.io/cadrum/12_offset.svg' alt='12_offset' width='360'/>
+<img src='https://lzpel.github.io/cadrum/13_offset.svg' alt='13_offset' width='360'/>
 
 #### Sew
 
 Sew closes a seam no boolean can: a hexagonal ring of mitered triangular prisms is lofted with coincident first/last sections, the caps are dropped, sew fuses the ring (genus 0 → 1), and clean erases the seam edges entirely.
 
 ```sh
-cargo run --example 13_sew
+cargo run --example 14_sew
 ```
 
 ```rust,no_run
@@ -1060,16 +1118,16 @@ fn main() -> Result<(), cadrum::Error> {
 
 ```
 
-Output: [13_sew.png](https://lzpel.github.io/cadrum/13_sew.png) | [13_sew.step](https://lzpel.github.io/cadrum/13_sew.step) | [13_sew.glb](https://lzpel.github.io/cadrum/13_sew.glb) | [13_sew.stl](https://lzpel.github.io/cadrum/13_sew.stl) | [13_sew.svg](https://lzpel.github.io/cadrum/13_sew.svg)
+Output: [14_sew.png](https://lzpel.github.io/cadrum/14_sew.png) | [14_sew.step](https://lzpel.github.io/cadrum/14_sew.step) | [14_sew.glb](https://lzpel.github.io/cadrum/14_sew.glb) | [14_sew.stl](https://lzpel.github.io/cadrum/14_sew.stl) | [14_sew.svg](https://lzpel.github.io/cadrum/14_sew.svg)
 
-<img src='https://lzpel.github.io/cadrum/13_sew.svg' alt='13_sew' width='360'/>
+<img src='https://lzpel.github.io/cadrum/14_sew.svg' alt='14_sew' width='360'/>
 
 #### Moebius
 
 mevius using BSplineEnd::Periodic and ProfileOrient::Auxiliary. Mevius but it's twisted more.
 
 ```sh
-cargo run --example 14_moebius
+cargo run --example 15_moebius
 ```
 
 ```rust,no_run
@@ -1124,16 +1182,16 @@ fn output(solids: &[Solid], suffix: Option<&str>) -> Result<(), cadrum::Error> {
 
 ```
 
-Output: [14_moebius.png](https://lzpel.github.io/cadrum/14_moebius.png) | [14_moebius.step](https://lzpel.github.io/cadrum/14_moebius.step) | [14_moebius.glb](https://lzpel.github.io/cadrum/14_moebius.glb) | [14_moebius.stl](https://lzpel.github.io/cadrum/14_moebius.stl) | [14_moebius.svg](https://lzpel.github.io/cadrum/14_moebius.svg)
+Output: [15_moebius.png](https://lzpel.github.io/cadrum/15_moebius.png) | [15_moebius.step](https://lzpel.github.io/cadrum/15_moebius.step) | [15_moebius.glb](https://lzpel.github.io/cadrum/15_moebius.glb) | [15_moebius.stl](https://lzpel.github.io/cadrum/15_moebius.stl) | [15_moebius.svg](https://lzpel.github.io/cadrum/15_moebius.svg)
 
-<img src='https://lzpel.github.io/cadrum/14_moebius.svg' alt='14_moebius' width='360'/>
+<img src='https://lzpel.github.io/cadrum/15_moebius.svg' alt='15_moebius' width='360'/>
 
 #### Multiview
 
 Fixed 4-view multiview PNG for LLM-driven design loops.
 
 ```sh
-cargo run --example 15_multiview
+cargo run --example 16_multiview
 ```
 
 ```rust,no_run
@@ -1167,9 +1225,9 @@ fn main() -> Result<(), cadrum::Error> {
 
 ```
 
-Output: [15_multiview.png](https://lzpel.github.io/cadrum/15_multiview.png) | [15_multiview.glb](https://lzpel.github.io/cadrum/15_multiview.glb) | [15_multiview.stl](https://lzpel.github.io/cadrum/15_multiview.stl)
+Output: [16_multiview.png](https://lzpel.github.io/cadrum/16_multiview.png) | [16_multiview.glb](https://lzpel.github.io/cadrum/16_multiview.glb) | [16_multiview.stl](https://lzpel.github.io/cadrum/16_multiview.stl)
 
-<img src='https://lzpel.github.io/cadrum/15_multiview.png' alt='15_multiview' width='360'/>
+<img src='https://lzpel.github.io/cadrum/16_multiview.png' alt='16_multiview' width='360'/>
 
 ## The Type Map
 
