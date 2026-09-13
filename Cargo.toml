@@ -37,6 +37,7 @@ cxx-build = "1"
 # download and extract prebuilt OCCT tarball
 minreq = { version = "3", features = ["https-rustls"] }
 libflate = "2"
+sha2 = "0.10"
 tar = "0.4"
 walkdir = "2"
 # source feature only: build OCCT from upstream sources

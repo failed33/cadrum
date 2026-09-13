@@ -2143,7 +2143,9 @@ bool write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     RustWriteStreambuf sbuf(writer);
     std::ostream os(&sbuf);
     try {
-        BinTools::Write(shape, os, false, false, BinTools_FormatVersion_CURRENT);
+        // Pinned: the written bytes are a persisted checkpoint, so an OCCT bump
+        // must not silently change the format `BinTools_FormatVersion_CURRENT` aliases.
+        BinTools::Write(shape, os, false, false, BinTools_FormatVersion_VERSION_4);
     } catch (const Standard_Failure&) {
         return false;
     }

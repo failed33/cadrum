@@ -9,6 +9,21 @@ const OCCT_VERSION: &str = "V8_0_1";
 /// Build revision for prebuilt tarballs. Update this when making non-OCCT-breaking changes that require cache invalidation (e.g. patch updates, build script changes, EH encoding changes, etc).
 const BUILD_REVISION: &str = "rev2";
 
+/// SHA-256 of every prebuilt tarball published for `release_name(None)`, as
+/// GitHub reports them on the release assets. A download that does not match
+/// is refused before anything is extracted, and a target without an entry is
+/// refused unless `CADRUM_PREBUILT_SHA256` names its digest. Update alongside
+/// `OCCT_VERSION`/`BUILD_REVISION`.
+const PREBUILT_SHA256: &[(&str, &str)] = &[
+	("aarch64-apple-darwin", "d9e0f3b34e6fb3599a6be5f143e775b0e04953c3fcef634cc0f5d55e0ee16904"),
+	("aarch64-unknown-linux-gnu", "27aa85259d9fcdaf0b3c4418821f7adbcdbad639eb0851eb3ca41b876dac038d"),
+	("wasm32-unknown-unknown", "8149e781acdbd21507cfb29937e48e5fdbe628ee5c37007f720dcf5d4000e6ad"),
+	("x86_64-apple-darwin", "9f4036cd4843fba3a36a67448420565573286686d8653f550f32c35d3eac36b3"),
+	("x86_64-pc-windows-gnu", "bf48d877552f7fa170f3a628fba81f504c030ce8e10a91b1c936e5af8cce55ac"),
+	("x86_64-pc-windows-msvc", "c90f2b6a72ae78d874057a6d637df9c5be887de38c6fe25c7d46d27d02934acd"),
+	("x86_64-unknown-linux-gnu", "95e068936c0cb4ba2668707c0dca209d3396103dfc1db85eb72d192badfb4143"),
+];
+
 /// Release tag / tarball / cache-dir name (#203). Fields are separated by `-` and
 /// characters within a field by `_`, so the name parses by splitting on `-` (the
 /// target's hyphens are underscored too). `has_version` appends the cadrum crate
@@ -237,13 +252,17 @@ fn occt_from_prebuilt(effective_root: &Path, target: &str) -> Option<Vec<PathBuf
 	let top_name = release_name(Some(target));
 	let tarball_name = format!("{}.tar.gz", top_name);
 	let url = env::var("CADRUM_PREBUILT_URL").unwrap_or_else(|_| format!("https://github.com/lzpel/cadrum/releases/download/{}/{}", release_name(None), tarball_name));
+	let Some(expected_sha256) = env::var("CADRUM_PREBUILT_SHA256").ok().or_else(|| PREBUILT_SHA256.iter().find(|(known, _)| *known == target).map(|(_, digest)| digest.to_string())) else {
+		eprintln!("cargo:warning=no pinned SHA-256 for prebuilt OCCT target `{}`; set CADRUM_PREBUILT_SHA256 or add it to PREBUILT_SHA256", target);
+		return None;
+	};
 
 	eprintln!("cargo:warning=Downloading prebuilt OCCT from {}", url);
 
 	let parent = effective_root.parent()?;
 	std::fs::create_dir_all(parent).ok()?;
 
-	if let Err(e) = download_and_extract_tar_gz(&url, parent) {
+	if let Err(e) = download_and_extract_tar_gz(&url, parent, Some(&expected_sha256)) {
 		eprintln!("cargo:warning=prebuilt fetch failed: {}", e);
 		return None;
 	}
@@ -265,9 +284,26 @@ fn occt_from_prebuilt(effective_root: &Path, target: &str) -> Option<Vec<PathBuf
 	find_occt_whitelist(effective_root)
 }
 
-fn download_and_extract_tar_gz(url: &str, dest: &Path) -> Result<(), String> {
-	let gz = libflate::gzip::Decoder::new(fetch(url)?).map_err(|e| format!("gzip decode failed: {e}"))?;
+/// Downloads the whole archive first when a digest is expected, so nothing is
+/// extracted from bytes that fail verification.
+fn download_and_extract_tar_gz(url: &str, dest: &Path, expected_sha256: Option<&str>) -> Result<(), String> {
+	let source: Box<dyn std::io::Read> = match expected_sha256 {
+		Some(expected) => Box::new(std::io::Cursor::new(verified_bytes(fetch(url)?, expected)?)),
+		None => fetch(url)?,
+	};
+	let gz = libflate::gzip::Decoder::new(source).map_err(|e| format!("gzip decode failed: {e}"))?;
 	tar::Archive::new(gz).unpack(dest).map_err(|e| format!("tar unpack failed: {e}"))
+}
+
+fn verified_bytes(mut reader: Box<dyn std::io::Read>, expected_sha256: &str) -> Result<Vec<u8>, String> {
+	use sha2::Digest;
+	let mut bytes = Vec::new();
+	reader.read_to_end(&mut bytes).map_err(|e| format!("download failed: {e}"))?;
+	let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+	if !actual.eq_ignore_ascii_case(expected_sha256) {
+		return Err(format!("prebuilt OCCT digest mismatch: expected sha256 {expected_sha256}, downloaded {actual}"));
+	}
+	Ok(bytes)
 }
 
 fn fetch(url: &str) -> Result<Box<dyn std::io::Read>, String> {
@@ -342,7 +378,7 @@ mod source {
 
 		if !walkdir::WalkDir::new(effective_root).max_depth(2).into_iter().any(|e| e.ok().is_some_and(|e| e.file_name() == "OCCT_LGPL_EXCEPTION.txt")) {
 			eprintln!("Downloading OCCT {} from {} ...", occt_version, occt_url);
-			download_and_extract_tar_gz(&occt_url, effective_root).expect("Failed to download/extract OCCT source tarball");
+			download_and_extract_tar_gz(&occt_url, effective_root, None).expect("Failed to download/extract OCCT source tarball");
 			eprintln!("OCCT source extracted successfully.");
 		}
 
