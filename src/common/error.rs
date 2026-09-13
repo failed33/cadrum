@@ -11,7 +11,7 @@ pub enum Error {
 	Tesselation,
 
 	/// Boolean operation (fuse/cut/common) failed.
-	Boolean,
+	Boolean(String),
 
 	/// Got not one solids although expecting one solid, typically as a result of boolean operation.
 	NotOne(usize),
@@ -20,10 +20,10 @@ pub enum Error {
 	Edge(String),
 
 	/// Shape cleaning (UnifySameDomain) failed.
-	Clean,
+	Clean(String),
 
 	/// Extrusion (`Solid::extrude`) failed: empty profile, zero-length direction, or profile not closed.
-	Extrude,
+	Extrude(String),
 
 	/// Revolution (`Solid::revolve`) failed: empty or non-loop profile, zero axis, angle of zero or beyond a full turn.
 	Revolve(String),
@@ -59,11 +59,11 @@ impl std::fmt::Display for Error {
 			Error::Validation(msg) => write!(f, "Validation failed: {msg}"),
 			Error::Io(e) => write!(f, "IO failed: {e}"),
 			Error::Tesselation => write!(f, "Tesselation failed"),
-			Error::Boolean => write!(f, "Boolean operation failed"),
+			Error::Boolean(msg) => write!(f, "Boolean operation failed: {msg}"),
 			Error::NotOne(n) => write!(f, "Expected exactly one resulting Solid, got {n}"),
 			Error::Edge(msg) => write!(f, "Edge failed: {msg}"),
-			Error::Clean => write!(f, "Clean failed"),
-			Error::Extrude => write!(f, "Extrude failed"),
+			Error::Clean(msg) => write!(f, "Clean failed: {msg}"),
+			Error::Extrude(msg) => write!(f, "Extrude failed: {msg}"),
 			Error::Revolve(msg) => write!(f, "Revolve failed: {msg}"),
 			Error::Sweep(msg) => write!(f, "Sweep failed: {msg}"),
 			Error::Shell(msg) => write!(f, "Shell failed: {msg}"),

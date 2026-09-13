@@ -90,20 +90,14 @@ pub(super) fn read_step<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
 		let mut rust_reader = RustReader::from_ref(reader);
 		let mut ids: Vec<u64> = Default::default();
 		let mut rgb: Vec<f32> = Default::default();
-		let inner = ffi::read_step_color_stream(&mut rust_reader, &mut ids, &mut rgb);
-		if inner.is_null() {
-			return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "step: reader produced no shape (invalid or corrupted input)")));
-		}
+		let inner = ffi::read_step_color_stream(&mut rust_reader, &mut ids, &mut rgb).map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("step: {}", e.what()))))?;
 		let colormap: std::collections::HashMap<u64, Color> = ids.into_iter().zip(rgb.chunks_exact(3)).map(|(id, c)| (id, Color { r: c[0], g: c[1], b: c[2] })).collect();
 		Ok(CompoundShape::from_raw(inner, colormap, Default::default()).decompose())
 	}
 	#[cfg(not(feature = "color"))]
 	{
 		let mut rust_reader = RustReader::from_ref(reader);
-		let inner = ffi::read_step_stream(&mut rust_reader);
-		if inner.is_null() {
-			return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "step: reader produced no shape (invalid or corrupted input)")));
-		}
+		let inner = ffi::read_step_stream(&mut rust_reader).map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("step: {}", e.what()))))?;
 		Ok(CompoundShape::from_raw(inner, Default::default()).decompose())
 	}
 }
@@ -114,12 +108,9 @@ pub(super) fn read_brep<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
 	let mut buf = Vec::new();
 	reader.read_to_end(&mut buf)?;
 
-	// Payload length — where a trailer would begin. Unwritten, and unread, on null.
+	// Payload length — where a trailer would begin. Unwritten, and unread, on error.
 	let mut consumed = 0usize;
-	let inner = ffi::read_brep_stream(&buf, &mut consumed);
-	if inner.is_null() {
-		return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "brep: reader produced no shape (invalid or corrupted input)")));
-	}
+	let inner = ffi::read_brep_stream(&buf, &mut consumed).map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("brep: {}", e.what()))))?;
 
 	#[cfg(feature = "color")]
 	{
@@ -149,20 +140,12 @@ pub(super) fn write_step<'a, W: Write>(solids: impl IntoIterator<Item = &'a Soli
 			rgb.extend_from_slice(&[c.r, c.g, c.b]);
 		}
 		let mut rust_writer = RustWriter::from_ref(writer);
-		if ffi::write_step_color_stream(compound.inner(), &ids, &rgb, &mut rust_writer) {
-			Ok(())
-		} else {
-			Err(Error::Io(std::io::Error::other("step: OCCT writer reported failure")))
-		}
+		ffi::write_step_color_stream(compound.inner(), &ids, &rgb, &mut rust_writer).map_err(|e| Error::Io(std::io::Error::other(format!("step: {}", e.what()))))
 	}
 	#[cfg(not(feature = "color"))]
 	{
 		let mut rust_writer = RustWriter::from_ref(writer);
-		if ffi::write_step_stream(compound.inner(), &mut rust_writer) {
-			Ok(())
-		} else {
-			Err(Error::Io(std::io::Error::other("step: OCCT writer reported failure")))
-		}
+		ffi::write_step_stream(compound.inner(), &mut rust_writer).map_err(|e| Error::Io(std::io::Error::other(format!("step: {}", e.what()))))
 	}
 }
 
@@ -171,9 +154,7 @@ pub(super) fn write_brep<'a, W: Write>(solids: impl IntoIterator<Item = &'a Soli
 	{
 		// Scoped: the streambuf flushes on drop, so the payload lands before the trailer.
 		let mut rust_writer = RustWriter::from_ref(writer);
-		if !ffi::write_brep_stream(compound.inner(), &mut rust_writer) {
-			return Err(Error::Io(std::io::Error::other("brep: OCCT writer reported failure")));
-		}
+		ffi::write_brep_stream(compound.inner(), &mut rust_writer).map_err(|e| Error::Io(std::io::Error::other(format!("brep: {}", e.what()))))?;
 	}
 	#[cfg(feature = "color")]
 	write_color_trailer(&compound, writer)?;

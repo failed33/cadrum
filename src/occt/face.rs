@@ -72,16 +72,6 @@ impl FaceStruct for Face {
 	}
 
 	fn iter_edge(&self) -> impl Iterator<Item = &Edge> + '_ {
-		self.edges
-			.get_or_init(|| {
-				ffi::face_edges(&self.inner)
-					.iter()
-					.map(|e_ref| {
-						let owned = ffi::clone_edge_handle(e_ref);
-						Edge::try_from_ffi(owned, "face_edges: null".into()).expect("face_edges: unexpected null (this is a bug)")
-					})
-					.collect()
-			})
-			.iter()
+		self.edges.get_or_init(|| ffi::face_edges(&self.inner).iter().map(|e_ref| Edge { inner: ffi::clone_edge_handle(e_ref) }).collect()).iter()
 	}
 }
