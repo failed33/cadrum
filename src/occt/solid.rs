@@ -256,8 +256,13 @@ impl SolidStruct for Solid {
 
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Edge>, dir: DVec3) -> Result<Self, Error> {
 		let mut profile_vec = ffi::edge_vec_new();
-		for e in profile {
-			ffi::edge_vec_push(profile_vec.pin_mut(), &e.inner);
+		for (index, edges) in Edge::loops(profile)?.into_iter().enumerate() {
+			if index > 0 {
+				ffi::edge_vec_push_null(profile_vec.pin_mut());
+			}
+			for e in edges {
+				ffi::edge_vec_push(profile_vec.pin_mut(), &e.inner);
+			}
 		}
 		let shape = ffi::make_extrude(&profile_vec, dir.x, dir.y, dir.z);
 		if shape.is_null() {

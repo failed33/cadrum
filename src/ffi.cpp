@@ -41,6 +41,7 @@
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <ShapeFix_Face.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -1528,13 +1529,64 @@ std::unique_ptr<TopoDS_Shape> make_extrude(
 {
     try {
         if (profile_edges.empty()) return nullptr;
+
+        std::vector<TopoDS_Wire> wires;
         BRepBuilderAPI_MakeWire wire_maker;
-        for (const auto& e : profile_edges) wire_maker.Add(e);
-        if (!wire_maker.IsDone()) return nullptr;
-        BRepBuilderAPI_MakeFace face_maker(wire_maker.Wire());
+        bool has_edges = false;
+        auto flush_wire = [&]() -> bool {
+            if (!has_edges) return true;
+            if (!wire_maker.IsDone()) return false;
+            wires.push_back(wire_maker.Wire());
+            wire_maker = BRepBuilderAPI_MakeWire();
+            has_edges = false;
+            return true;
+        };
+        for (const auto& e : profile_edges) {
+            if (e.IsNull()) {
+                if (!flush_wire()) return nullptr;
+            } else {
+                wire_maker.Add(e);
+                has_edges = true;
+            }
+        }
+        if (!flush_wire()) return nullptr;
+        if (wires.empty()) return nullptr;
+
+        auto face_area = [](const TopoDS_Face& f) {
+            GProp_GProps props;
+            BRepGProp::SurfaceProperties(f, props);
+            return props.Mass();
+        };
+        BRepBuilderAPI_MakeFace outer_only(wires.front());
+        if (!outer_only.IsDone()) return nullptr;
+        const double outer_area = face_area(outer_only.Face());
+
+        BRepBuilderAPI_MakeFace face_maker(wires.front());
         if (!face_maker.IsDone()) return nullptr;
-        gp_Vec dir(dx, dy, dz);
-        BRepPrimAPI_MakePrism prism(face_maker.Face(), dir);
+        // A hole must wind against the outer loop or its area adds instead of
+        // subtracting, and MakeFace::Add takes the wire as given. Rather than demand a
+        // winding from the caller, add whichever orientation removes material.
+        for (size_t i = 1; i < wires.size(); ++i) {
+            BRepBuilderAPI_MakeFace trial(wires.front());
+            trial.Add(wires[i]);
+            if (!trial.IsDone()) return nullptr;
+            face_maker.Add(face_area(trial.Face()) < outer_area ? wires[i] : TopoDS::Wire(wires[i].Reversed()));
+        }
+        if (!face_maker.IsDone()) return nullptr;
+        TopoDS_Face face = face_maker.Face();
+
+        if (wires.size() > 1) {
+            // Nothing above checks that a hole lies inside the outer loop; ShapeFix_Face
+            // returns a Shell rather than a Face when the loops bound disjoint areas.
+            ShapeFix_Face fixer(face);
+            fixer.FixAddNaturalBoundMode() = 0;
+            fixer.Perform();
+            TopoDS_Shape fixed = fixer.Result();
+            if (fixed.IsNull() || fixed.ShapeType() != TopAbs_FACE) return nullptr;
+            face = TopoDS::Face(fixed);
+        }
+
+        BRepPrimAPI_MakePrism prism(face, gp_Vec(dx, dy, dz));
         prism.Build();
         if (!prism.IsDone()) return nullptr;
         return std::make_unique<TopoDS_Shape>(prism.Shape());

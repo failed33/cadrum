@@ -304,8 +304,9 @@ std::unique_ptr<TopoDS_Edge> mirror_edge(
     double ox, double oy, double oz,
     double nx, double ny, double nz);
 
-// Extrude a closed profile wire into a solid using BRepPrimAPI_MakePrism.
-// Internally builds Wire → Face → Prism.
+// Extrude a closed profile into a solid using BRepPrimAPI_MakePrism.
+// `profile_edges` holds one or more loops separated by null-edge sentinels
+// (TopoDS_Edge().IsNull()); the extra loops become holes.
 std::unique_ptr<TopoDS_Shape> make_extrude(
     const std::vector<TopoDS_Edge>& profile_edges,
     double dx, double dy, double dz);

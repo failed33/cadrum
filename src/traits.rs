@@ -591,10 +591,16 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	/// repair small inconsistencies). Wraps `ShapeUpgrade_UnifySameDomain`
 	/// + cleanup. Failure is reported as `Error::Clean`.
 	fn clean(&self) -> Result<Self, Error>;
-	/// Extrude a closed profile wire along a direction vector to form a solid.
+	/// Extrude a closed profile along a direction vector to form a solid.
 	///
-	/// Internally builds a face from the wire and uses `BRepPrimAPI_MakePrism`.
-	/// Fails if the profile is empty, not closed, or the direction is zero-length.
+	/// `profile` is split by [`Edge::loops`](EdgeStruct::loops): the first loop
+	/// bounds the solid and any further loop becomes a hole, so a plate with a
+	/// bore is `[outer, bore].concat()`. Loop winding does not matter — each hole
+	/// is oriented to remove material whichever way it was traced.
+	///
+	/// Internally builds a face from the loops and uses `BRepPrimAPI_MakePrism`.
+	/// Fails if the profile is empty, does not split into closed loops, a hole
+	/// lies outside the outer loop, or the direction is zero-length.
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Self::Edge>, dir: DVec3) -> Result<Self, Error>
 	where
 		Self::Edge: 'a;
