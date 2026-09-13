@@ -7,6 +7,7 @@
 
 // --- Standard / exceptions ---
 #include <Standard_Failure.hxx>
+#include <stdexcept>
 
 // --- Topology types & navigation ---
 #include <TopoDS.hxx>
@@ -425,60 +426,56 @@ std::unique_ptr<TopoDS_Shape> builder_cells(
     rust::Slice<const int64_t> clauses,
     rust::Vec<uint64_t>& out_history)
 {
-    try {
-        if (solids.empty() || clauses.size() == 0) return nullptr;
+    if (solids.empty() || clauses.size() == 0) throw std::runtime_error("no solids or clauses");
 
-        // BOPAlgo_CellsBuilder は引数 N≥2 を想定するため、単一 solid の場合は
-        // deep copy のみで返す (DNF clause が `[+1, 0]` の単純ケース)。
-        if (solids.size() == 1 && clauses.size() == 2 && clauses[0] == 1 && clauses[1] == 0) {
-            BRepBuilderAPI_Copy copier(solids[0], true, false);
-            auto shape = std::make_unique<TopoDS_Shape>(copier.Shape());
-            // No builder: relay_from_pair gives {post → pre==src}; flatten it.
-            std::unordered_map<uint64_t, uint64_t> relay;
-            relay_from_pair(solids[0], copier.Shape(), relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return shape;
-        }
-
-        BOPAlgo_CellsBuilder cb;
-        NCollection_List<TopoDS_Shape> args;
-        for (const auto& s : solids) args.Append(s);
-        cb.SetArguments(args);
-        cb.Perform();
-        if (cb.HasErrors()) return nullptr;
-
-        const int material = 1;
-        NCollection_List<TopoDS_Shape> take, avoid;
-        for (size_t i = 0; i < clauses.size(); ++i) {
-            int64_t lit = clauses[i];
-            if (lit == 0) {
-                if (!take.IsEmpty()) {
-                    cb.AddToResult(take, avoid, material);
-                }
-                take.Clear();
-                avoid.Clear();
-                continue;
-            }
-            int64_t idx = (lit > 0 ? lit : -lit) - 1;
-            if (idx < 0 || idx >= static_cast<int64_t>(solids.size())) return nullptr;
-            if (lit > 0) take.Append(solids[static_cast<size_t>(idx)]);
-            else         avoid.Append(solids[static_cast<size_t>(idx)]);
-        }
-        cb.RemoveInternalBoundaries();
-
-        std::unordered_map<uint64_t, uint64_t> relay1, relay2;
-        for (const auto& s : solids) {
-            relay_from_builder(cb, s, relay1);
-        }
-
-        BRepBuilderAPI_Copy copier(cb.Shape(), true, false);
+    // BOPAlgo_CellsBuilder は引数 N≥2 を想定するため、単一 solid の場合は
+    // deep copy のみで返す (DNF clause が `[+1, 0]` の単純ケース)。
+    if (solids.size() == 1 && clauses.size() == 2 && clauses[0] == 1 && clauses[1] == 0) {
+        BRepBuilderAPI_Copy copier(solids[0], true, false);
         auto shape = std::make_unique<TopoDS_Shape>(copier.Shape());
-        relay_from_pair(cb.Shape(), copier.Shape(), relay2);
-        relay_into_history(&relay1, &relay2, out_history);
+        // No builder: relay_from_pair gives {post → pre==src}; flatten it.
+        std::unordered_map<uint64_t, uint64_t> relay;
+        relay_from_pair(solids[0], copier.Shape(), relay);
+        relay_into_history(&relay, nullptr, out_history);
         return shape;
-    } catch (const Standard_Failure&) {
-        return nullptr;
     }
+
+    BOPAlgo_CellsBuilder cb;
+    NCollection_List<TopoDS_Shape> args;
+    for (const auto& s : solids) args.Append(s);
+    cb.SetArguments(args);
+    cb.Perform();
+    if (cb.HasErrors()) throw std::runtime_error("BOPAlgo_CellsBuilder reported errors");
+
+    const int material = 1;
+    NCollection_List<TopoDS_Shape> take, avoid;
+    for (size_t i = 0; i < clauses.size(); ++i) {
+        int64_t lit = clauses[i];
+        if (lit == 0) {
+            if (!take.IsEmpty()) {
+                cb.AddToResult(take, avoid, material);
+            }
+            take.Clear();
+            avoid.Clear();
+            continue;
+        }
+        int64_t idx = (lit > 0 ? lit : -lit) - 1;
+        if (idx < 0 || idx >= static_cast<int64_t>(solids.size())) throw std::runtime_error("clause literal out of range");
+        if (lit > 0) take.Append(solids[static_cast<size_t>(idx)]);
+        else         avoid.Append(solids[static_cast<size_t>(idx)]);
+    }
+    cb.RemoveInternalBoundaries();
+
+    std::unordered_map<uint64_t, uint64_t> relay1, relay2;
+    for (const auto& s : solids) {
+        relay_from_builder(cb, s, relay1);
+    }
+
+    BRepBuilderAPI_Copy copier(cb.Shape(), true, false);
+    auto shape = std::make_unique<TopoDS_Shape>(copier.Shape());
+    relay_from_pair(cb.Shape(), copier.Shape(), relay2);
+    relay_into_history(&relay1, &relay2, out_history);
+    return shape;
 }
 
 // Unify shared faces / collinear edges. `out_history` is populated with
@@ -489,36 +486,32 @@ std::unique_ptr<TopoDS_Shape> builder_clean(
     const TopoDS_Shape& shape,
     rust::Vec<uint64_t>& out_history)
 {
-    try {
-        ShapeUpgrade_UnifySameDomain unifier(shape, true, true, true);
-        unifier.AllowInternalEdges(false);
-        unifier.Build();
+    ShapeUpgrade_UnifySameDomain unifier(shape, true, true, true);
+    unifier.AllowInternalEdges(false);
+    unifier.Build();
 
-        auto result = std::make_unique<TopoDS_Shape>(unifier.Shape());
+    auto result = std::make_unique<TopoDS_Shape>(unifier.Shape());
 
-        Handle(BRepTools_History) history = unifier.History();
-        if (!history.IsNull()) {
-            for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-                const TopoDS_Shape& old_face = ex.Current();
-                uint64_t old_id = reinterpret_cast<uint64_t>(old_face.TShape().get());
-                if (history->IsRemoved(old_face)) continue;
-                const NCollection_List<TopoDS_Shape>& mods = history->Modified(old_face);
-                if (mods.IsEmpty()) {
-                    // Unchanged: TShape* is the same in the result.
-                    out_history.push_back(old_id);
-                    out_history.push_back(old_id);
-                } else {
-                    // Merged: use only the first resulting face (first-found wins).
-                    uint64_t new_id = reinterpret_cast<uint64_t>(mods.First().TShape().get());
-                    out_history.push_back(new_id);
-                    out_history.push_back(old_id);
-                }
+    Handle(BRepTools_History) history = unifier.History();
+    if (!history.IsNull()) {
+        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+            const TopoDS_Shape& old_face = ex.Current();
+            uint64_t old_id = reinterpret_cast<uint64_t>(old_face.TShape().get());
+            if (history->IsRemoved(old_face)) continue;
+            const NCollection_List<TopoDS_Shape>& mods = history->Modified(old_face);
+            if (mods.IsEmpty()) {
+                // Unchanged: TShape* is the same in the result.
+                out_history.push_back(old_id);
+                out_history.push_back(old_id);
+            } else {
+                // Merged: use only the first resulting face (first-found wins).
+                uint64_t new_id = reinterpret_cast<uint64_t>(mods.First().TShape().get());
+                out_history.push_back(new_id);
+                out_history.push_back(old_id);
             }
         }
-        return result;
-    } catch (const Standard_Failure&) {
-        return nullptr;
     }
+    return result;
 }
 
 // ==================== Transforms (solid → solid, no history) ====================
@@ -538,13 +531,9 @@ std::unique_ptr<TopoDS_Shape> transform_rotate(
     double dx, double dy, double dz,
     double angle)
 {
-    try {
-        gp_Trsf trsf;
-        trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz)), angle);
-        return std::make_unique<TopoDS_Shape>(shape.Moved(TopLoc_Location(trsf)));
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Trsf trsf;
+    trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz)), angle);
+    return std::make_unique<TopoDS_Shape>(shape.Moved(TopLoc_Location(trsf)));
 }
 
 std::unique_ptr<TopoDS_Shape> transform_scale(
@@ -552,14 +541,10 @@ std::unique_ptr<TopoDS_Shape> transform_scale(
     double cx, double cy, double cz,
     double factor)
 {
-    try {
-        gp_Trsf trsf;
-        trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
-        BRepBuilderAPI_Transform transform(shape, trsf, true);
-        return std::make_unique<TopoDS_Shape>(transform.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Trsf trsf;
+    trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
+    BRepBuilderAPI_Transform transform(shape, trsf, true);
+    return std::make_unique<TopoDS_Shape>(transform.Shape());
 }
 
 std::unique_ptr<TopoDS_Shape> transform_mirror(
@@ -567,14 +552,10 @@ std::unique_ptr<TopoDS_Shape> transform_mirror(
     double ox, double oy, double oz,
     double nx, double ny, double nz)
 {
-    try {
-        gp_Trsf trsf;
-        trsf.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
-        BRepBuilderAPI_Transform transform(shape, trsf, true);
-        return std::make_unique<TopoDS_Shape>(transform.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Trsf trsf;
+    trsf.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
+    BRepBuilderAPI_Transform transform(shape, trsf, true);
+    return std::make_unique<TopoDS_Shape>(transform.Shape());
 }
 
 // ==================== Shape Queries ====================
@@ -995,96 +976,77 @@ std::unique_ptr<TopoDS_Edge> make_helix_edge(
     double xrx, double xry, double xrz,
     double radius, double pitch, double height)
 {
-    try {
-        if (radius < Precision::Confusion()) return nullptr;
-        if (pitch < Precision::Confusion()) return nullptr;
-        if (height < Precision::Confusion()) return nullptr;
+    if (radius < Precision::Confusion()) throw std::runtime_error("radius must be positive");
+    if (pitch < Precision::Confusion()) throw std::runtime_error("pitch must be positive");
+    if (height < Precision::Confusion()) throw std::runtime_error("height must be positive");
 
-        // Build a deterministic local frame: the cylinder's local +X is the
-        // user-supplied x_ref (orthogonalized against axis by gp_Ax2). The
-        // helix then starts at (radius, 0, 0) in this frame, which is
-        // origin + radius * normalize(x_ref ⊥ axis) in world coordinates.
-        gp_Dir axis_dir(ax, ay, az);
-        gp_Dir x_ref(xrx, xry, xrz);
-        if (axis_dir.IsParallel(x_ref, Precision::Angular())) return nullptr;
-        gp_Ax2 ax2(gp_Pnt(0.0, 0.0, 0.0), axis_dir, x_ref);
-        Handle(Geom_CylindricalSurface) cylinder =
-            new Geom_CylindricalSurface(ax2, radius);
+    // Build a deterministic local frame: the cylinder's local +X is the
+    // user-supplied x_ref (orthogonalized against axis by gp_Ax2). The
+    // helix then starts at (radius, 0, 0) in this frame, which is
+    // origin + radius * normalize(x_ref ⊥ axis) in world coordinates.
+    gp_Dir axis_dir(ax, ay, az);
+    gp_Dir x_ref(xrx, xry, xrz);
+    if (axis_dir.IsParallel(x_ref, Precision::Angular())) throw std::runtime_error("x_ref is parallel to the axis");
+    gp_Ax2 ax2(gp_Pnt(0.0, 0.0, 0.0), axis_dir, x_ref);
+    Handle(Geom_CylindricalSurface) cylinder =
+        new Geom_CylindricalSurface(ax2, radius);
 
-        double turns = height / pitch;
-        double total_angle = turns * 2.0 * M_PI;
-        gp_Pnt2d line_origin(0.0, 0.0);
-        gp_Dir2d line_dir(total_angle, height);
-        Handle(Geom2d_Line) line2d = new Geom2d_Line(line_origin, line_dir);
+    double turns = height / pitch;
+    double total_angle = turns * 2.0 * M_PI;
+    gp_Pnt2d line_origin(0.0, 0.0);
+    gp_Dir2d line_dir(total_angle, height);
+    Handle(Geom2d_Line) line2d = new Geom2d_Line(line_origin, line_dir);
 
-        double param_end = std::sqrt(total_angle * total_angle + height * height);
+    double param_end = std::sqrt(total_angle * total_angle + height * height);
 
-        BRepBuilderAPI_MakeEdge edgeMaker(line2d, cylinder, 0.0, param_end);
-        if (!edgeMaker.IsDone()) return nullptr;
-        TopoDS_Edge edge = edgeMaker.Edge();
-        BRepLib::BuildCurve3d(edge);
-        return std::make_unique<TopoDS_Edge>(edge);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    BRepBuilderAPI_MakeEdge edgeMaker(line2d, cylinder, 0.0, param_end);
+    if (!edgeMaker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeEdge did not complete");
+    TopoDS_Edge edge = edgeMaker.Edge();
+    BRepLib::BuildCurve3d(edge);
+    return std::make_unique<TopoDS_Edge>(edge);
 }
 
 std::unique_ptr<std::vector<TopoDS_Edge>> make_polygon_edges(rust::Slice<const double> coords) {
-    auto out = std::make_unique<std::vector<TopoDS_Edge>>();
-    if (coords.size() < 9 || coords.size() % 3 != 0) return out;
-    try {
-        BRepBuilderAPI_MakePolygon poly;
-        for (size_t i = 0; i + 2 < coords.size(); i += 3) {
-            poly.Add(gp_Pnt(coords[i], coords[i + 1], coords[i + 2]));
-        }
-        poly.Close();
-        if (!poly.IsDone()) return out;
-        TopoDS_Wire wire = poly.Wire();
-        // Walk the wire's edges in order using TopExp_Explorer.
-        for (TopExp_Explorer ex(wire, TopAbs_EDGE); ex.More(); ex.Next()) {
-            out->push_back(TopoDS::Edge(ex.Current()));
-        }
-        return out;
-    } catch (const Standard_Failure&) {
-        out->clear();
-        return out;
+    if (coords.size() < 9 || coords.size() % 3 != 0) throw std::runtime_error("need at least 3 points");
+    BRepBuilderAPI_MakePolygon poly;
+    for (size_t i = 0; i + 2 < coords.size(); i += 3) {
+        poly.Add(gp_Pnt(coords[i], coords[i + 1], coords[i + 2]));
     }
+    poly.Close();
+    if (!poly.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakePolygon did not complete");
+    auto out = std::make_unique<std::vector<TopoDS_Edge>>();
+    for (TopExp_Explorer ex(poly.Wire(), TopAbs_EDGE); ex.More(); ex.Next()) {
+        out->push_back(TopoDS::Edge(ex.Current()));
+    }
+    return out;
 }
 
 std::unique_ptr<TopoDS_Edge> make_circle_edge(
     double ax, double ay, double az, double radius)
 {
-    try {
-        if (radius < Precision::Confusion()) return nullptr;
-        gp_Dir axis_dir(ax, ay, az);
-        // Single-arg gp_Ax2(origin, N): OCCT picks an arbitrary X direction
-        // orthogonal to the normal. The circle's parametric start is then at
-        // (radius, 0, 0) in that implicit local frame. Callers that need a
-        // specific start direction should rotate the result into place.
-        gp_Ax2 ax2(gp_Pnt(0.0, 0.0, 0.0), axis_dir);
-        gp_Circ circ(ax2, radius);
-        BRepBuilderAPI_MakeEdge edgeMaker(circ);
-        if (!edgeMaker.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    if (radius < Precision::Confusion()) throw std::runtime_error("radius must be positive");
+    gp_Dir axis_dir(ax, ay, az);
+    // Single-arg gp_Ax2(origin, N): OCCT picks an arbitrary X direction
+    // orthogonal to the normal. The circle's parametric start is then at
+    // (radius, 0, 0) in that implicit local frame. Callers that need a
+    // specific start direction should rotate the result into place.
+    gp_Ax2 ax2(gp_Pnt(0.0, 0.0, 0.0), axis_dir);
+    gp_Circ circ(ax2, radius);
+    BRepBuilderAPI_MakeEdge edgeMaker(circ);
+    if (!edgeMaker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeEdge did not complete");
+    return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
 }
 
 std::unique_ptr<TopoDS_Edge> make_line_edge(
     double ax, double ay, double az,
     double bx, double by, double bz)
 {
-    try {
-        gp_Pnt a(ax, ay, az);
-        gp_Pnt b(bx, by, bz);
-        if (a.Distance(b) < Precision::Confusion()) return nullptr;
-        BRepBuilderAPI_MakeEdge edgeMaker(a, b);
-        if (!edgeMaker.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Pnt a(ax, ay, az);
+    gp_Pnt b(bx, by, bz);
+    if (a.Distance(b) < Precision::Confusion()) throw std::runtime_error("zero-length segment");
+    BRepBuilderAPI_MakeEdge edgeMaker(a, b);
+    if (!edgeMaker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeEdge did not complete");
+    return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
 }
 
 std::unique_ptr<TopoDS_Edge> make_arc_edge(
@@ -1092,20 +1054,16 @@ std::unique_ptr<TopoDS_Edge> make_arc_edge(
     double mx, double my, double mz,
     double ex, double ey, double ez)
 {
-    try {
-        gp_Pnt p_start(sx, sy, sz);
-        gp_Pnt p_mid(mx, my, mz);
-        gp_Pnt p_end(ex, ey, ez);
-        // false: do not wrap around; the arc goes from start through
-        // mid to end on the unique circle defined by those three points.
-        GC_MakeArcOfCircle maker(p_start, p_mid, p_end);
-        if (!maker.IsDone()) return nullptr;
-        BRepBuilderAPI_MakeEdge edgeMaker(maker.Value());
-        if (!edgeMaker.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Pnt p_start(sx, sy, sz);
+    gp_Pnt p_mid(mx, my, mz);
+    gp_Pnt p_end(ex, ey, ez);
+    // false: do not wrap around; the arc goes from start through
+    // mid to end on the unique circle defined by those three points.
+    GC_MakeArcOfCircle maker(p_start, p_mid, p_end);
+    if (!maker.IsDone()) throw std::runtime_error("GC_MakeArcOfCircle did not complete (collinear or coincident points)");
+    BRepBuilderAPI_MakeEdge edgeMaker(maker.Value());
+    if (!edgeMaker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeEdge did not complete");
+    return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
 }
 
 // Cubic B-spline edge interpolating the given data points.
@@ -1134,46 +1092,42 @@ std::unique_ptr<TopoDS_Edge> make_bspline_edge(
     double sx, double sy, double sz,
     double ex, double ey, double ez)
 {
-    if (coords.size() < 6 || coords.size() % 3 != 0) return nullptr;
-    try {
-        // Local alias: `Handle(NCollection_HArray1<gp_Pnt>)` は Handle マクロが
-        // template 内のカンマで引数を分割してしまうので、using alias を噛ませて
-        // 単一トークン化する(コミット a72e330 で deprecated 型に戻した時の回避策)。
-        using HPntArray = NCollection_HArray1<gp_Pnt>;
-        const int n = static_cast<int>(coords.size() / 3);
-        Handle(HPntArray) pts = new HPntArray(1, n);
-        for (int i = 0; i < n; ++i) {
-            pts->SetValue(i + 1, gp_Pnt(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]));
-        }
-
-        const bool periodic = (end_kind == 0) ? true : false;
-        GeomAPI_Interpolate interp(pts, periodic, Precision::Confusion());
-
-        if (end_kind == 2) {
-            // Clamped: load explicit start and end tangent vectors.
-            // Scale = true lets OCCT scale the tangent magnitude
-            // by the chord length, which usually gives more intuitive
-            // pull strength than the raw vector magnitude.
-            gp_Vec start_tan(sx, sy, sz);
-            gp_Vec end_tan(ex, ey, ez);
-            interp.Load(start_tan, end_tan, true);
-        } else if (end_kind != 0 && end_kind != 1) {
-            // Unknown end_kind; fail rather than silently picking a default.
-            return nullptr;
-        }
-
-        interp.Perform();
-        if (!interp.IsDone()) return nullptr;
-
-        Handle(Geom_BSplineCurve) curve = interp.Curve();
-        if (curve.IsNull()) return nullptr;
-
-        BRepBuilderAPI_MakeEdge edgeMaker(curve);
-        if (!edgeMaker.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
-    } catch (const Standard_Failure&) {
-        return nullptr;
+    if (coords.size() < 6 || coords.size() % 3 != 0) throw std::runtime_error("need at least 2 points");
+    // Local alias: `Handle(NCollection_HArray1<gp_Pnt>)` は Handle マクロが
+    // template 内のカンマで引数を分割してしまうので、using alias を噛ませて
+    // 単一トークン化する(コミット a72e330 で deprecated 型に戻した時の回避策)。
+    using HPntArray = NCollection_HArray1<gp_Pnt>;
+    const int n = static_cast<int>(coords.size() / 3);
+    Handle(HPntArray) pts = new HPntArray(1, n);
+    for (int i = 0; i < n; ++i) {
+        pts->SetValue(i + 1, gp_Pnt(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]));
     }
+
+    const bool periodic = (end_kind == 0) ? true : false;
+    GeomAPI_Interpolate interp(pts, periodic, Precision::Confusion());
+
+    if (end_kind == 2) {
+        // Clamped: load explicit start and end tangent vectors.
+        // Scale = true lets OCCT scale the tangent magnitude
+        // by the chord length, which usually gives more intuitive
+        // pull strength than the raw vector magnitude.
+        gp_Vec start_tan(sx, sy, sz);
+        gp_Vec end_tan(ex, ey, ez);
+        interp.Load(start_tan, end_tan, true);
+    } else if (end_kind != 0 && end_kind != 1) {
+        // Unknown end_kind; fail rather than silently picking a default.
+        throw std::runtime_error("unknown end kind");
+    }
+
+    interp.Perform();
+    if (!interp.IsDone()) throw std::runtime_error("GeomAPI_Interpolate did not complete");
+
+    Handle(Geom_BSplineCurve) curve = interp.Curve();
+    if (curve.IsNull()) throw std::runtime_error("GeomAPI_Interpolate produced no curve");
+
+    BRepBuilderAPI_MakeEdge edgeMaker(curve);
+    if (!edgeMaker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeEdge did not complete");
+    return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
 }
 
 void edge_endpoints(const TopoDS_Edge& edge,
@@ -1262,12 +1216,8 @@ bool edge_project_point(const TopoDS_Edge& edge,
 }
 
 std::unique_ptr<TopoDS_Edge> deep_copy_edge(const TopoDS_Edge& edge) {
-    try {
-        BRepBuilderAPI_Copy copier(edge);
-        return std::make_unique<TopoDS_Edge>(TopoDS::Edge(copier.Shape()));
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    BRepBuilderAPI_Copy copier(edge);
+    return std::make_unique<TopoDS_Edge>(TopoDS::Edge(copier.Shape()));
 }
 
 // Helper: apply a gp_Trsf to an edge via BRepBuilderAPI_Transform.
@@ -1275,12 +1225,8 @@ std::unique_ptr<TopoDS_Edge> deep_copy_edge(const TopoDS_Edge& edge) {
 static std::unique_ptr<TopoDS_Edge> transform_edge_impl(
     const TopoDS_Edge& edge, const gp_Trsf& trsf)
 {
-    try {
-        BRepBuilderAPI_Transform transform(edge, trsf, true);
-        return std::make_unique<TopoDS_Edge>(TopoDS::Edge(transform.Shape()));
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    BRepBuilderAPI_Transform transform(edge, trsf, true);
+    return std::make_unique<TopoDS_Edge>(TopoDS::Edge(transform.Shape()));
 }
 
 std::unique_ptr<TopoDS_Edge> translate_edge(
@@ -1297,13 +1243,9 @@ std::unique_ptr<TopoDS_Edge> rotate_edge(
     double dx, double dy, double dz,
     double angle)
 {
-    try {
-        gp_Trsf trsf;
-        trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz)), angle);
-        return transform_edge_impl(edge, trsf);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Trsf trsf;
+    trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz)), angle);
+    return transform_edge_impl(edge, trsf);
 }
 
 std::unique_ptr<TopoDS_Edge> scale_edge(
@@ -1321,13 +1263,9 @@ std::unique_ptr<TopoDS_Edge> mirror_edge(
     double ox, double oy, double oz,
     double nx, double ny, double nz)
 {
-    try {
-        gp_Trsf trsf;
-        trsf.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
-        return transform_edge_impl(edge, trsf);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    gp_Trsf trsf;
+    trsf.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
+    return transform_edge_impl(edge, trsf);
 }
 
 std::unique_ptr<std::vector<TopoDS_Edge>> edge_vec_new() {
@@ -1364,82 +1302,78 @@ std::unique_ptr<TopoDS_Shape> builder_thick_solid(
     double thickness,
     rust::Vec<uint64_t>& out_history)
 {
-    try {
-        // Empty open_faces: MakeThickSolidByJoin degenerates to a plain offset
-        // shape (no cavity) because it needs at least one removed face to
-        // build the first wall W1. Instead, build the solid explicitly as
-        // outer_shell + reversed inner_shell so the result is a sealed solid
-        // with an internal void (OCCT permits multi-shell solids).
-        if (open_faces.empty()) {
-            BRepOffsetAPI_MakeOffsetShape offset;
-            offset.PerformByJoin(
-                solid, thickness,
-                /*tolerance=*/ 1.0e-6,
-                /*mode=*/ BRepOffset_Skin,
-                /*intersection=*/ false,
-                /*selfInter=*/ false,
-                /*join=*/ GeomAbs_Arc);
-            if (!offset.IsDone()) return nullptr;
-            TopoDS_Shape offset_shape = offset.Shape();
-
-            auto extract_shell = [](const TopoDS_Shape& s) -> TopoDS_Shell {
-                if (s.ShapeType() == TopAbs_SHELL) return TopoDS::Shell(s);
-                TopExp_Explorer ex(s, TopAbs_SHELL);
-                if (!ex.More()) return TopoDS_Shell();
-                return TopoDS::Shell(ex.Current());
-            };
-
-            TopoDS_Shell original_shell = extract_shell(solid);
-            TopoDS_Shell offset_shell = extract_shell(offset_shape);
-            if (original_shell.IsNull() || offset_shell.IsNull()) return nullptr;
-
-            // thickness sign determines which shell is outer:
-            //   negative → offset shrinks inward: original = outer, offset = inner cavity
-            //   positive → offset expands outward: offset = outer, original = inner cavity
-            TopoDS_Shell outer = thickness < 0.0 ? original_shell : offset_shell;
-            TopoDS_Shell inner = thickness < 0.0 ? offset_shell : original_shell;
-
-            BRepBuilderAPI_MakeSolid solid_maker(outer);
-            solid_maker.Add(TopoDS::Shell(inner.Reversed()));
-            if (!solid_maker.IsDone()) return nullptr;
-            // Sealed case: original faces are retained as identity; offset walls
-            // are Generated (src is an edge) and intentionally absent.
-            std::unordered_map<uint64_t, uint64_t> relay;
-            relay_from_pair(solid, solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid_maker.Solid());
-        }
-
-        NCollection_List<TopoDS_Shape> faces_to_remove;
-        for (const auto& f : open_faces) faces_to_remove.Append(f);
-
-        BRepOffsetAPI_MakeThickSolid builder;
-        builder.MakeThickSolidByJoin(
-            solid, faces_to_remove, thickness,
+    // Empty open_faces: MakeThickSolidByJoin degenerates to a plain offset
+    // shape (no cavity) because it needs at least one removed face to
+    // build the first wall W1. Instead, build the solid explicitly as
+    // outer_shell + reversed inner_shell so the result is a sealed solid
+    // with an internal void (OCCT permits multi-shell solids).
+    if (open_faces.empty()) {
+        BRepOffsetAPI_MakeOffsetShape offset;
+        offset.PerformByJoin(
+            solid, thickness,
             /*tolerance=*/ 1.0e-6,
             /*mode=*/ BRepOffset_Skin,
             /*intersection=*/ false,
             /*selfInter=*/ false,
             /*join=*/ GeomAbs_Arc);
-        builder.Build();
-        if (!builder.IsDone()) return nullptr;
-        // No copy, so relay keys are final faces.
+        if (!offset.IsDone()) throw std::runtime_error("BRepOffsetAPI_MakeOffsetShape did not complete");
+        TopoDS_Shape offset_shape = offset.Shape();
+
+        auto extract_shell = [](const TopoDS_Shape& s) -> TopoDS_Shell {
+            if (s.ShapeType() == TopAbs_SHELL) return TopoDS::Shell(s);
+            TopExp_Explorer ex(s, TopAbs_SHELL);
+            if (!ex.More()) return TopoDS_Shell();
+            return TopoDS::Shell(ex.Current());
+        };
+
+        TopoDS_Shell original_shell = extract_shell(solid);
+        TopoDS_Shell offset_shell = extract_shell(offset_shape);
+        if (original_shell.IsNull() || offset_shell.IsNull()) throw std::runtime_error("no shell in the solid or its offset");
+
+        // thickness sign determines which shell is outer:
+        //   negative → offset shrinks inward: original = outer, offset = inner cavity
+        //   positive → offset expands outward: offset = outer, original = inner cavity
+        TopoDS_Shell outer = thickness < 0.0 ? original_shell : offset_shell;
+        TopoDS_Shell inner = thickness < 0.0 ? offset_shell : original_shell;
+
+        BRepBuilderAPI_MakeSolid solid_maker(outer);
+        solid_maker.Add(TopoDS::Shell(inner.Reversed()));
+        if (!solid_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeSolid did not complete");
+        // Sealed case: original faces are retained as identity; offset walls
+        // are Generated (src is an edge) and intentionally absent.
         std::unordered_map<uint64_t, uint64_t> relay;
-        relay_from_builder(builder, solid, relay);
-        // MakeThickSolid does not flag removed open faces as IsDeleted; drop
-        // their (identity) pairs since those faces are absent from the result.
-        for (const auto& f : open_faces) {
-            uint64_t removed_id = reinterpret_cast<uint64_t>(f.TShape().get());
-            for (auto it = relay.begin(); it != relay.end(); ) {
-                if (it->second == removed_id) it = relay.erase(it);
-                else ++it;
-            }
-        }
+        relay_from_pair(solid, solid, relay);
         relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(builder.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
+        return std::make_unique<TopoDS_Shape>(solid_maker.Solid());
     }
+
+    NCollection_List<TopoDS_Shape> faces_to_remove;
+    for (const auto& f : open_faces) faces_to_remove.Append(f);
+
+    BRepOffsetAPI_MakeThickSolid builder;
+    builder.MakeThickSolidByJoin(
+        solid, faces_to_remove, thickness,
+        /*tolerance=*/ 1.0e-6,
+        /*mode=*/ BRepOffset_Skin,
+        /*intersection=*/ false,
+        /*selfInter=*/ false,
+        /*join=*/ GeomAbs_Arc);
+    builder.Build();
+    if (!builder.IsDone()) throw std::runtime_error("BRepOffsetAPI_MakeThickSolid did not complete");
+    // No copy, so relay keys are final faces.
+    std::unordered_map<uint64_t, uint64_t> relay;
+    relay_from_builder(builder, solid, relay);
+    // MakeThickSolid does not flag removed open faces as IsDeleted; drop
+    // their (identity) pairs since those faces are absent from the result.
+    for (const auto& f : open_faces) {
+        uint64_t removed_id = reinterpret_cast<uint64_t>(f.TShape().get());
+        for (auto it = relay.begin(); it != relay.end(); ) {
+            if (it->second == removed_id) it = relay.erase(it);
+            else ++it;
+        }
+    }
+    relay_into_history(&relay, nullptr, out_history);
+    return std::make_unique<TopoDS_Shape>(builder.Shape());
 }
 
 std::unique_ptr<TopoDS_Shape> builder_fillet(
@@ -1448,38 +1382,34 @@ std::unique_ptr<TopoDS_Shape> builder_fillet(
     double radius,
     rust::Vec<uint64_t>& out_history)
 {
-    try {
-        if (edges.empty()) {
-            // No-op: shallow copy; every face is identity.
-            std::unordered_map<uint64_t, uint64_t> relay;
-            relay_from_pair(solid, solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        BRepFilletAPI_MakeFillet mk(solid);
-        for (const TopoDS_Edge& e : edges) {
-            if (e.IsNull()) continue;
-            mk.Add(radius, e);
-        }
-        mk.Build();
-        if (!mk.IsDone()) return nullptr;
-        TopoDS_Shape result = mk.Shape();
-        if (result.IsNull()) return nullptr;
-        // MakeFillet can wrap the solid in a compound even if it contains only one solid.
-        // Solid::new requires a TopAbs_SOLID, so extract the first one if we got a container.
-        if (result.ShapeType() != TopAbs_SOLID) {
-            TopExp_Explorer ex(result, TopAbs_SOLID);
-            if (!ex.More()) return nullptr;
-            result = ex.Current();
-        }
-        // No copy, so relay keys are final faces (identity for untouched).
+    if (edges.empty()) {
+        // No-op: shallow copy; every face is identity.
         std::unordered_map<uint64_t, uint64_t> relay;
-        relay_from_builder(mk, solid, relay);
+        relay_from_pair(solid, solid, relay);
         relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(result);
-    } catch (const Standard_Failure&) {
-        return nullptr;
+        return std::make_unique<TopoDS_Shape>(solid);
     }
+    BRepFilletAPI_MakeFillet mk(solid);
+    for (const TopoDS_Edge& e : edges) {
+        if (e.IsNull()) continue;
+        mk.Add(radius, e);
+    }
+    mk.Build();
+    if (!mk.IsDone()) throw std::runtime_error("BRepFilletAPI_MakeFillet did not complete");
+    TopoDS_Shape result = mk.Shape();
+    if (result.IsNull()) throw std::runtime_error("BRepFilletAPI_MakeFillet produced no shape");
+    // MakeFillet can wrap the solid in a compound even if it contains only one solid.
+    // Solid::new requires a TopAbs_SOLID, so extract the first one if we got a container.
+    if (result.ShapeType() != TopAbs_SOLID) {
+        TopExp_Explorer ex(result, TopAbs_SOLID);
+        if (!ex.More()) throw std::runtime_error("result contains no solid");
+        result = ex.Current();
+    }
+    // No copy, so relay keys are final faces (identity for untouched).
+    std::unordered_map<uint64_t, uint64_t> relay;
+    relay_from_builder(mk, solid, relay);
+    relay_into_history(&relay, nullptr, out_history);
+    return std::make_unique<TopoDS_Shape>(result);
 }
 
 std::unique_ptr<TopoDS_Shape> builder_chamfer(
@@ -1488,38 +1418,34 @@ std::unique_ptr<TopoDS_Shape> builder_chamfer(
     double distance,
     rust::Vec<uint64_t>& out_history)
 {
-    try {
-        if (edges.empty()) {
-            // No-op: shallow copy; every face is identity.
-            std::unordered_map<uint64_t, uint64_t> relay;
-            relay_from_pair(solid, solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        BRepFilletAPI_MakeChamfer mk(solid);
-        for (const TopoDS_Edge& e : edges) {
-            if (e.IsNull()) continue;
-            mk.Add(distance, e);
-        }
-        mk.Build();
-        if (!mk.IsDone()) return nullptr;
-        TopoDS_Shape result = mk.Shape();
-        if (result.IsNull()) return nullptr;
-        // Like MakeFillet, MakeChamfer may wrap the result in a compound even if it contains only one solid.
-        // Extract the first solid so Solid::new's TopAbs_SOLID invariant holds.
-        if (result.ShapeType() != TopAbs_SOLID) {
-            TopExp_Explorer ex(result, TopAbs_SOLID);
-            if (!ex.More()) return nullptr;
-            result = ex.Current();
-        }
-        // No copy, so relay keys are final faces (identity for untouched).
+    if (edges.empty()) {
+        // No-op: shallow copy; every face is identity.
         std::unordered_map<uint64_t, uint64_t> relay;
-        relay_from_builder(mk, solid, relay);
+        relay_from_pair(solid, solid, relay);
         relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(result);
-    } catch (const Standard_Failure&) {
-        return nullptr;
+        return std::make_unique<TopoDS_Shape>(solid);
     }
+    BRepFilletAPI_MakeChamfer mk(solid);
+    for (const TopoDS_Edge& e : edges) {
+        if (e.IsNull()) continue;
+        mk.Add(distance, e);
+    }
+    mk.Build();
+    if (!mk.IsDone()) throw std::runtime_error("BRepFilletAPI_MakeChamfer did not complete");
+    TopoDS_Shape result = mk.Shape();
+    if (result.IsNull()) throw std::runtime_error("BRepFilletAPI_MakeChamfer produced no shape");
+    // Like MakeFillet, MakeChamfer may wrap the result in a compound even if it contains only one solid.
+    // Extract the first solid so Solid::new's TopAbs_SOLID invariant holds.
+    if (result.ShapeType() != TopAbs_SOLID) {
+        TopExp_Explorer ex(result, TopAbs_SOLID);
+        if (!ex.More()) throw std::runtime_error("result contains no solid");
+        result = ex.Current();
+    }
+    // No copy, so relay keys are final faces (identity for untouched).
+    std::unordered_map<uint64_t, uint64_t> relay;
+    relay_from_builder(mk, solid, relay);
+    relay_into_history(&relay, nullptr, out_history);
+    return std::make_unique<TopoDS_Shape>(result);
 }
 
 // Extrude a closed profile wire into a solid via BRepPrimAPI_MakePrism.
@@ -1541,13 +1467,14 @@ static TopoDS_Face face_from_loops(const std::vector<TopoDS_Edge>& profile_edges
     };
     for (const auto& e : profile_edges) {
         if (e.IsNull()) {
-            if (!flush_wire()) return TopoDS_Face();
+            if (!flush_wire()) throw std::runtime_error("edges do not connect into a wire");
         } else {
             wire_maker.Add(e);
             has_edges = true;
         }
     }
-    if (!flush_wire() || wires.empty()) return TopoDS_Face();
+    if (!flush_wire()) throw std::runtime_error("edges do not connect into a wire");
+    if (wires.empty()) throw std::runtime_error("empty profile");
 
     auto face_area = [](const TopoDS_Face& f) {
         GProp_GProps props;
@@ -1555,21 +1482,21 @@ static TopoDS_Face face_from_loops(const std::vector<TopoDS_Edge>& profile_edges
         return props.Mass();
     };
     BRepBuilderAPI_MakeFace outer_only(wires.front());
-    if (!outer_only.IsDone()) return TopoDS_Face();
+    if (!outer_only.IsDone()) throw std::runtime_error("outer loop is not planar");
     const double outer_area = face_area(outer_only.Face());
 
     BRepBuilderAPI_MakeFace face_maker(wires.front());
-    if (!face_maker.IsDone()) return TopoDS_Face();
+    if (!face_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeFace did not complete");
     // A hole must wind against the outer loop or its area adds instead of
     // subtracting, and MakeFace::Add takes the wire as given. Rather than demand a
     // winding from the caller, add whichever orientation removes material.
     for (size_t i = 1; i < wires.size(); ++i) {
         BRepBuilderAPI_MakeFace trial(wires.front());
         trial.Add(wires[i]);
-        if (!trial.IsDone()) return TopoDS_Face();
+        if (!trial.IsDone()) throw std::runtime_error("hole loop is not planar");
         face_maker.Add(face_area(trial.Face()) < outer_area ? wires[i] : TopoDS::Wire(wires[i].Reversed()));
     }
-    if (!face_maker.IsDone()) return TopoDS_Face();
+    if (!face_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeFace did not complete");
     TopoDS_Face face = face_maker.Face();
 
     if (wires.size() > 1) {
@@ -1579,7 +1506,7 @@ static TopoDS_Face face_from_loops(const std::vector<TopoDS_Edge>& profile_edges
         fixer.FixAddNaturalBoundMode() = 0;
         fixer.Perform();
         TopoDS_Shape fixed = fixer.Result();
-        if (fixed.IsNull() || fixed.ShapeType() != TopAbs_FACE) return TopoDS_Face();
+        if (fixed.IsNull() || fixed.ShapeType() != TopAbs_FACE) throw std::runtime_error("a hole lies outside the outer loop");
         face = TopoDS::Face(fixed);
     }
     return face;
@@ -1589,19 +1516,14 @@ std::unique_ptr<TopoDS_Shape> make_extrude(
     const std::vector<TopoDS_Edge>& profile_edges,
     double dx, double dy, double dz)
 {
-    try {
-        // MakePrism accepts a zero vector and returns a degenerate solid.
-        const gp_Vec dir(dx, dy, dz);
-        if (dir.Magnitude() < Precision::Confusion()) return nullptr;
-        TopoDS_Face face = face_from_loops(profile_edges);
-        if (face.IsNull()) return nullptr;
-        BRepPrimAPI_MakePrism prism(face, dir);
-        prism.Build();
-        if (!prism.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(prism.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+    // MakePrism accepts a zero vector and returns a degenerate solid.
+    const gp_Vec dir(dx, dy, dz);
+    if (dir.Magnitude() < Precision::Confusion()) throw std::runtime_error("direction is zero-length");
+    TopoDS_Face face = face_from_loops(profile_edges);
+    BRepPrimAPI_MakePrism prism(face, dir);
+    prism.Build();
+    if (!prism.IsDone()) throw std::runtime_error("BRepPrimAPI_MakePrism did not complete");
+    return std::make_unique<TopoDS_Shape>(prism.Shape());
 }
 
 std::unique_ptr<TopoDS_Shape> make_revolve(
@@ -1610,28 +1532,23 @@ std::unique_ptr<TopoDS_Shape> make_revolve(
     double dx, double dy, double dz,
     double angle)
 {
-    try {
-        const gp_Vec axis_vec(dx, dy, dz);
-        if (axis_vec.Magnitude() < Precision::Confusion()) return nullptr;
-        // MakeRevol takes an angle in [0, 2pi]; a negative angle turns the other way.
-        if (std::abs(angle) < Precision::Angular() || std::abs(angle) > 2.0 * M_PI + Precision::Angular()) return nullptr;
-        TopoDS_Face face = face_from_loops(profile_edges);
-        if (face.IsNull()) return nullptr;
-        gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(axis_vec));
-        if (angle < 0.0) axis.Reverse();
-        BRepPrimAPI_MakeRevol revol(face, axis, std::abs(angle));
-        revol.Build();
-        if (!revol.IsDone()) return nullptr;
-        TopoDS_Shape result = revol.Shape();
-        if (result.ShapeType() != TopAbs_SOLID) {
-            TopExp_Explorer ex(result, TopAbs_SOLID);
-            if (!ex.More()) return nullptr;
-            result = ex.Current();
-        }
-        return std::make_unique<TopoDS_Shape>(result);
-    } catch (const Standard_Failure&) {
-        return nullptr;
+    const gp_Vec axis_vec(dx, dy, dz);
+    if (axis_vec.Magnitude() < Precision::Confusion()) throw std::runtime_error("axis is zero-length");
+    // MakeRevol takes an angle in [0, 2pi]; a negative angle turns the other way.
+    if (std::abs(angle) < Precision::Angular() || std::abs(angle) > 2.0 * M_PI + Precision::Angular()) throw std::runtime_error("angle must be within (0, 2pi]");
+    TopoDS_Face face = face_from_loops(profile_edges);
+    gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(axis_vec));
+    if (angle < 0.0) axis.Reverse();
+    BRepPrimAPI_MakeRevol revol(face, axis, std::abs(angle));
+    revol.Build();
+    if (!revol.IsDone()) throw std::runtime_error("BRepPrimAPI_MakeRevol did not complete");
+    TopoDS_Shape result = revol.Shape();
+    if (result.ShapeType() != TopAbs_SOLID) {
+        TopExp_Explorer ex(result, TopAbs_SOLID);
+        if (!ex.More()) throw std::runtime_error("result contains no solid");
+        result = ex.Current();
     }
+    return std::make_unique<TopoDS_Shape>(result);
 }
 
 // Unified MakePipeShell wrapper.  Handles both single-profile sweep and
@@ -1646,86 +1563,82 @@ std::unique_ptr<TopoDS_Shape> make_pipe_shell(
     double ux, double uy, double uz,
     const std::vector<TopoDS_Edge>& aux_spine_edges)
 {
-    try {
-        if (all_edges.empty() || spine_edges.empty()) return nullptr;
+    if (all_edges.empty() || spine_edges.empty()) throw std::runtime_error("empty profile or spine");
 
-        // Build the spine wire.
-        BRepBuilderAPI_MakeWire spineMaker;
-        for (const auto& e : spine_edges) spineMaker.Add(e);
-        if (!spineMaker.IsDone()) return nullptr;
-        TopoDS_Wire spine = spineMaker.Wire();
+    // Build the spine wire.
+    BRepBuilderAPI_MakeWire spineMaker;
+    for (const auto& e : spine_edges) spineMaker.Add(e);
+    if (!spineMaker.IsDone()) throw std::runtime_error("spine edges do not connect into a wire");
+    TopoDS_Wire spine = spineMaker.Wire();
 
-        BRepOffsetAPI_MakePipeShell shell(spine);
+    BRepOffsetAPI_MakePipeShell shell(spine);
 
-        // Configure trihedron law.
-        switch (orient) {
-            case 0: {
-                // Fixed: lock the trihedron to the spine-start frame.
-                BRepAdaptor_Curve curve(spine_edges.front());
-                gp_Pnt start_pnt;
-                gp_Vec start_tan;
-                curve.D1(curve.FirstParameter(), start_pnt, start_tan);
-                if (start_tan.Magnitude() < Precision::Confusion()) return nullptr;
-                gp_Dir tdir(start_tan);
-                gp_Dir xref = (std::abs(tdir.X()) < 0.9) ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
-                gp_Ax2 fixed_ax2(start_pnt, tdir, xref);
-                shell.SetMode(fixed_ax2);
-                break;
-            }
-            case 1: {
-                // Torsion: raw Frenet.
-                shell.SetMode(true);
-                break;
-            }
-            case 2: {
-                // Up(v): fix the binormal direction.
-                gp_Vec up_vec(ux, uy, uz);
-                if (up_vec.Magnitude() < Precision::Confusion()) return nullptr;
-                shell.SetMode(gp_Dir(up_vec));
-                break;
-            }
-            case 3: {
-                // Auxiliary: build aux spine wire and use it for twist control.
-                if (aux_spine_edges.empty()) return nullptr;
-                BRepBuilderAPI_MakeWire auxMaker;
-                for (const auto& e : aux_spine_edges) auxMaker.Add(e);
-                if (!auxMaker.IsDone()) return nullptr;
-                shell.SetMode(auxMaker.Wire(), true);
-                break;
-            }
-            default: {
-                shell.SetMode(true);
-                break;
-            }
+    // Configure trihedron law.
+    switch (orient) {
+        case 0: {
+            // Fixed: lock the trihedron to the spine-start frame.
+            BRepAdaptor_Curve curve(spine_edges.front());
+            gp_Pnt start_pnt;
+            gp_Vec start_tan;
+            curve.D1(curve.FirstParameter(), start_pnt, start_tan);
+            if (start_tan.Magnitude() < Precision::Confusion()) throw std::runtime_error("spine has no tangent at its start");
+            gp_Dir tdir(start_tan);
+            gp_Dir xref = (std::abs(tdir.X()) < 0.9) ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+            gp_Ax2 fixed_ax2(start_pnt, tdir, xref);
+            shell.SetMode(fixed_ax2);
+            break;
         }
-
-        // Split all_edges by null sentinels into profile wires and Add each.
-        BRepBuilderAPI_MakeWire wire_maker;
-        bool has_edges = false;
-        for (const auto& e : all_edges) {
-            if (e.IsNull()) {
-                if (!wire_maker.IsDone()) return nullptr;
-                shell.Add(wire_maker.Wire(), false, false);
-                wire_maker = BRepBuilderAPI_MakeWire();
-                has_edges = false;
-            } else {
-                wire_maker.Add(e);
-                has_edges = true;
-            }
+        case 1: {
+            // Torsion: raw Frenet.
+            shell.SetMode(true);
+            break;
         }
-        // Last section (after final sentinel or single section with no sentinel).
-        if (has_edges) {
-            if (!wire_maker.IsDone()) return nullptr;
-            shell.Add(wire_maker.Wire(), false, false);
+        case 2: {
+            // Up(v): fix the binormal direction.
+            gp_Vec up_vec(ux, uy, uz);
+            if (up_vec.Magnitude() < Precision::Confusion()) throw std::runtime_error("up vector is zero-length");
+            shell.SetMode(gp_Dir(up_vec));
+            break;
         }
-
-        shell.Build();
-        if (!shell.IsDone()) return nullptr;
-        if (!shell.MakeSolid()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(shell.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
+        case 3: {
+            // Auxiliary: build aux spine wire and use it for twist control.
+            if (aux_spine_edges.empty()) throw std::runtime_error("auxiliary spine is empty");
+            BRepBuilderAPI_MakeWire auxMaker;
+            for (const auto& e : aux_spine_edges) auxMaker.Add(e);
+            if (!auxMaker.IsDone()) throw std::runtime_error("auxiliary spine edges do not connect into a wire");
+            shell.SetMode(auxMaker.Wire(), true);
+            break;
+        }
+        default: {
+            shell.SetMode(true);
+            break;
+        }
     }
+
+    // Split all_edges by null sentinels into profile wires and Add each.
+    BRepBuilderAPI_MakeWire wire_maker;
+    bool has_edges = false;
+    for (const auto& e : all_edges) {
+        if (e.IsNull()) {
+            if (!wire_maker.IsDone()) throw std::runtime_error("profile edges do not connect into a wire");
+            shell.Add(wire_maker.Wire(), false, false);
+            wire_maker = BRepBuilderAPI_MakeWire();
+            has_edges = false;
+        } else {
+            wire_maker.Add(e);
+            has_edges = true;
+        }
+    }
+    // Last section (after final sentinel or single section with no sentinel).
+    if (has_edges) {
+        if (!wire_maker.IsDone()) throw std::runtime_error("profile edges do not connect into a wire");
+        shell.Add(wire_maker.Wire(), false, false);
+    }
+
+    shell.Build();
+    if (!shell.IsDone()) throw std::runtime_error("BRepOffsetAPI_MakePipeShell did not complete");
+    if (!shell.MakeSolid()) throw std::runtime_error("profile is not closed, so the sweep is a shell rather than a solid");
+    return std::make_unique<TopoDS_Shape>(shell.Shape());
 }
 
 // Loft (skin) a solid through a sequence of cross-section wires.
@@ -1740,45 +1653,41 @@ std::unique_ptr<TopoDS_Shape> make_loft(
     const std::vector<TopoDS_Edge>& all_edges,
     bool ruled)
 {
-    try {
-        BRepOffsetAPI_ThruSections loft(
-            /*isSolid=*/true,
-            /*isRuled=*/ruled,
-            Precision::Confusion());
+    BRepOffsetAPI_ThruSections loft(
+        /*isSolid=*/true,
+        /*isRuled=*/ruled,
+        Precision::Confusion());
 
-        // Split all_edges by null sentinels into section wires.
-        size_t wire_count = 0;
-        BRepBuilderAPI_MakeWire wire_maker;
-        bool has_edges = false;
+    // Split all_edges by null sentinels into section wires.
+    size_t wire_count = 0;
+    BRepBuilderAPI_MakeWire wire_maker;
+    bool has_edges = false;
 
-        auto flush_wire = [&]() -> bool {
-            if (!has_edges) return true;
-            if (!wire_maker.IsDone()) return false;
-            loft.AddWire(wire_maker.Wire());
-            wire_count++;
-            wire_maker = BRepBuilderAPI_MakeWire();
-            has_edges = false;
-            return true;
-        };
+    auto flush_wire = [&]() -> bool {
+        if (!has_edges) return true;
+        if (!wire_maker.IsDone()) return false;
+        loft.AddWire(wire_maker.Wire());
+        wire_count++;
+        wire_maker = BRepBuilderAPI_MakeWire();
+        has_edges = false;
+        return true;
+    };
 
-        for (const auto& e : all_edges) {
-            if (e.IsNull()) {
-                if (!flush_wire()) return nullptr;
-            } else {
-                wire_maker.Add(e);
-                has_edges = true;
-            }
+    for (const auto& e : all_edges) {
+        if (e.IsNull()) {
+            if (!flush_wire()) throw std::runtime_error("section edges do not connect into a wire");
+        } else {
+            wire_maker.Add(e);
+            has_edges = true;
         }
-        if (!flush_wire()) return nullptr;
-
-        if (wire_count < 2) return nullptr;
-
-        loft.Build();
-        if (!loft.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(loft.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
     }
+    if (!flush_wire()) throw std::runtime_error("section edges do not connect into a wire");
+
+    if (wire_count < 2) throw std::runtime_error("need at least 2 sections");
+
+    loft.Build();
+    if (!loft.IsDone()) throw std::runtime_error("BRepOffsetAPI_ThruSections did not complete");
+    return std::make_unique<TopoDS_Shape>(loft.Shape());
 }
 
 // Sew (stitch) free faces into a single closed shell and upgrade it to a
@@ -1791,36 +1700,32 @@ std::unique_ptr<TopoDS_Shape> make_sewn_solid(
     const std::vector<TopoDS_Face>& faces,
     double tolerance)
 {
-    try {
-        if (faces.empty()) return nullptr;
-        BRepBuilderAPI_Sewing sewing(tolerance);
-        for (const auto& f : faces) sewing.Add(f);
-        sewing.Perform();
-        const TopoDS_Shape& sewn = sewing.SewedShape();
-        if (sewn.IsNull()) return nullptr;
+    if (faces.empty()) throw std::runtime_error("no faces");
+    BRepBuilderAPI_Sewing sewing(tolerance);
+    for (const auto& f : faces) sewing.Add(f);
+    sewing.Perform();
+    const TopoDS_Shape& sewn = sewing.SewedShape();
+    if (sewn.IsNull()) throw std::runtime_error("BRepBuilderAPI_Sewing produced no shape");
 
-        // A fully sewn input comes back as a single TopAbs_SHELL; partial
-        // sewing yields a compound mixing shells and free faces, in which
-        // case requiring exactly one shell rejects the stray-face cases.
-        std::vector<TopoDS_Shell> shells;
-        if (sewn.ShapeType() == TopAbs_SHELL) {
-            shells.push_back(TopoDS::Shell(sewn));
-        } else {
-            for (TopExp_Explorer ex(sewn, TopAbs_SHELL); ex.More(); ex.Next()) {
-                shells.push_back(TopoDS::Shell(ex.Current()));
-            }
+    // A fully sewn input comes back as a single TopAbs_SHELL; partial
+    // sewing yields a compound mixing shells and free faces, in which
+    // case requiring exactly one shell rejects the stray-face cases.
+    std::vector<TopoDS_Shell> shells;
+    if (sewn.ShapeType() == TopAbs_SHELL) {
+        shells.push_back(TopoDS::Shell(sewn));
+    } else {
+        for (TopExp_Explorer ex(sewn, TopAbs_SHELL); ex.More(); ex.Next()) {
+            shells.push_back(TopoDS::Shell(ex.Current()));
         }
-        if (shells.size() != 1) return nullptr;
-        if (!BRep_Tool::IsClosed(shells.front())) return nullptr;
-
-        BRepBuilderAPI_MakeSolid solid_maker(shells.front());
-        if (!solid_maker.IsDone()) return nullptr;
-        TopoDS_Solid solid = solid_maker.Solid();
-        BRepLib::OrientClosedSolid(solid);
-        return std::make_unique<TopoDS_Shape>(solid);
-    } catch (const Standard_Failure&) {
-        return nullptr;
     }
+    if (shells.size() != 1) throw std::runtime_error("faces do not form exactly one shell");
+    if (!BRep_Tool::IsClosed(shells.front())) throw std::runtime_error("the sewn shell is not closed");
+
+    BRepBuilderAPI_MakeSolid solid_maker(shells.front());
+    if (!solid_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeSolid did not complete");
+    TopoDS_Solid solid = solid_maker.Solid();
+    BRepLib::OrientClosedSolid(solid);
+    return std::make_unique<TopoDS_Shape>(solid);
 }
 
 // Offset the given faces of `shape` by signed `offset` along their normals; a
@@ -1831,51 +1736,47 @@ std::unique_ptr<TopoDS_Shape> make_offset(
     double offset,
     double tolerance)
 {
-    try {
-        // Per-face offsets need the Intersection join; Arc rejects them.
-        BRepOffset_MakeOffset offsetter;
-        offsetter.Initialize(
-            shape, /*offset=*/ 0.0, tolerance,
-            /*mode=*/ BRepOffset_Skin,
-            /*intersection=*/ true,
-            /*selfInter=*/ false,
-            /*join=*/ GeomAbs_Intersection);
-        for (const TopoDS_Face& f : faces) offsetter.SetOffsetOnFace(f, offset);
-        offsetter.MakeOffsetShape();
-        if (!offsetter.IsDone()) return nullptr;
-        TopoDS_Shape result = offsetter.Shape();
-        if (result.IsNull()) return nullptr;
+    // Per-face offsets need the Intersection join; Arc rejects them.
+    BRepOffset_MakeOffset offsetter;
+    offsetter.Initialize(
+        shape, /*offset=*/ 0.0, tolerance,
+        /*mode=*/ BRepOffset_Skin,
+        /*intersection=*/ true,
+        /*selfInter=*/ false,
+        /*join=*/ GeomAbs_Intersection);
+    for (const TopoDS_Face& f : faces) offsetter.SetOffsetOnFace(f, offset);
+    offsetter.MakeOffsetShape();
+    if (!offsetter.IsDone()) throw std::runtime_error("BRepOffset_MakeOffset did not complete");
+    TopoDS_Shape result = offsetter.Shape();
+    if (result.IsNull()) throw std::runtime_error("BRepOffset_MakeOffset produced no shape");
 
-        if (result.ShapeType() == TopAbs_COMPOUND) {
-            // Unwrap a one-solid (or one-shell) compound.
-            TopExp_Explorer solid_ex(result, TopAbs_SOLID);
-            if (solid_ex.More()) {
-                result = solid_ex.Current();
-                solid_ex.Next();
-                if (solid_ex.More()) return nullptr;
-            } else {
-                TopExp_Explorer shell_ex(result, TopAbs_SHELL);
-                if (!shell_ex.More()) return nullptr;
-                result = shell_ex.Current();
-                shell_ex.Next();
-                if (shell_ex.More()) return nullptr;
-            }
+    if (result.ShapeType() == TopAbs_COMPOUND) {
+        // Unwrap a one-solid (or one-shell) compound.
+        TopExp_Explorer solid_ex(result, TopAbs_SOLID);
+        if (solid_ex.More()) {
+            result = solid_ex.Current();
+            solid_ex.Next();
+            if (solid_ex.More()) throw std::runtime_error("offset produced more than one solid");
+        } else {
+            TopExp_Explorer shell_ex(result, TopAbs_SHELL);
+            if (!shell_ex.More()) throw std::runtime_error("offset produced neither a solid nor a shell");
+            result = shell_ex.Current();
+            shell_ex.Next();
+            if (shell_ex.More()) throw std::runtime_error("offset produced more than one shell");
         }
-
-        if (result.ShapeType() == TopAbs_SOLID) {
-            return std::make_unique<TopoDS_Shape>(result);
-        }
-        if (result.ShapeType() == TopAbs_SHELL && BRep_Tool::IsClosed(result)) {
-            BRepBuilderAPI_MakeSolid solid_maker(TopoDS::Shell(result));
-            if (!solid_maker.IsDone()) return nullptr;
-            TopoDS_Solid solid = solid_maker.Solid();
-            BRepLib::OrientClosedSolid(solid);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        return nullptr;
-    } catch (const Standard_Failure&) {
-        return nullptr;
     }
+
+    if (result.ShapeType() == TopAbs_SOLID) {
+        return std::make_unique<TopoDS_Shape>(result);
+    }
+    if (result.ShapeType() == TopAbs_SHELL && BRep_Tool::IsClosed(result)) {
+        BRepBuilderAPI_MakeSolid solid_maker(TopoDS::Shell(result));
+        if (!solid_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeSolid did not complete");
+        TopoDS_Solid solid = solid_maker.Solid();
+        BRepLib::OrientClosedSolid(solid);
+        return std::make_unique<TopoDS_Shape>(solid);
+    }
+    throw std::runtime_error("offset produced an open shell");
 }
 
 std::unique_ptr<TopoDS_Shape> make_bspline_solid(
@@ -1883,182 +1784,178 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
     uint32_t nu, uint32_t nv,
     bool u_periodic)
 {
-    try {
-        if (coords.size() != static_cast<size_t>(nu) * nv * 3) return nullptr;
-        if (nu < 2 || nv < 3) return nullptr;
+    if (coords.size() != static_cast<size_t>(nu) * nv * 3) throw std::runtime_error("coordinate count does not match the grid");
+    if (nu < 2 || nv < 3) throw std::runtime_error("grid must be at least 2x3");
 
-        // Tensor-product truly-periodic interpolation (#120).
-        //
-        // Naive approach (Interpolate over augmented grid → SetUPeriodic) only
-        // delivers C^0 at the seam: the non-periodic interpolator picks
-        // independent boundary derivatives at u_min vs u_max, and SetUPeriodic
-        // just relabels topology without fixing the derivative mismatch.
-        //
-        // Instead we apply GeomAPI_Interpolate (which honors a true periodic
-        // boundary by solving a circulant linear system) once per V column,
-        // then once per U row of the resulting intermediate poles. The final
-        // poles array feeds Geom_BSplineSurface(...) directly with the
-        // UPeriodic / VPeriodic flags, yielding C^(degree-1) continuity at
-        // both seams.
-        using HPntArray  = NCollection_HArray1<gp_Pnt>;
-        using HRealArray = NCollection_HArray1<double>;
-        const double tol = Precision::Confusion();
+    // Tensor-product truly-periodic interpolation (#120).
+    //
+    // Naive approach (Interpolate over augmented grid → SetUPeriodic) only
+    // delivers C^0 at the seam: the non-periodic interpolator picks
+    // independent boundary derivatives at u_min vs u_max, and SetUPeriodic
+    // just relabels topology without fixing the derivative mismatch.
+    //
+    // Instead we apply GeomAPI_Interpolate (which honors a true periodic
+    // boundary by solving a circulant linear system) once per V column,
+    // then once per U row of the resulting intermediate poles. The final
+    // poles array feeds Geom_BSplineSurface(...) directly with the
+    // UPeriodic / VPeriodic flags, yielding C^(degree-1) continuity at
+    // both seams.
+    using HPntArray  = NCollection_HArray1<gp_Pnt>;
+    using HRealArray = NCollection_HArray1<double>;
+    const double tol = Precision::Confusion();
 
-        // Build uniform parameter arrays so that every column / row uses the
-        // SAME parametrization. With chord-length (the Interpolate default),
-        // columns of different total length get different knot vectors and
-        // the resulting tensor surface has parameter mismatches at +X axis
-        // (visible as boolean-intersect degeneracies). Uniform params avoid
-        // this since the input grid samples φ / θ at constant fractional
-        // intervals along each direction.
-        const int u_param_count = static_cast<int>(u_periodic ? nu + 1 : nu);
-        Handle(HRealArray) u_params = new HRealArray(1, u_param_count);
-        for (int k = 0; k < u_param_count; ++k) {
-            u_params->SetValue(k + 1, static_cast<double>(k) / static_cast<double>(nu));
-        }
-        Handle(HRealArray) v_params = new HRealArray(1, static_cast<int>(nv + 1));
-        for (uint32_t k = 0; k <= nv; ++k) {
-            v_params->SetValue(static_cast<int>(k) + 1,
-                               static_cast<double>(k) / static_cast<double>(nv));
-        }
-
-        // Stage 1: per-V-column interpolation along U with uniform params.
-        std::vector<Handle(Geom_BSplineCurve)> u_curves;
-        u_curves.reserve(nv);
-        for (uint32_t j = 0; j < nv; ++j) {
-            Handle(HPntArray) col = new HPntArray(1, static_cast<int>(nu));
-            for (uint32_t i = 0; i < nu; ++i) {
-                const size_t idx = (static_cast<size_t>(i) * nv + j) * 3;
-                col->SetValue(static_cast<int>(i) + 1,
-                              gp_Pnt(coords[idx], coords[idx + 1], coords[idx + 2]));
-            }
-            GeomAPI_Interpolate interp(col, u_params, u_periodic, tol);
-            interp.Perform();
-            if (!interp.IsDone()) return nullptr;
-            u_curves.push_back(interp.Curve());
-        }
-
-        // Capture U knot vector / multiplicities / degree from any column;
-        // GeomAPI_Interpolate uses the same chord-length parametrization for
-        // all columns since the V coordinate is uniform per column.
-        const int u_degree = u_curves[0]->Degree();
-        const int u_npoles = u_curves[0]->NbPoles();
-        const NCollection_Array1<double>& u_knots = u_curves[0]->Knots();
-        const NCollection_Array1<int>&    u_mults = u_curves[0]->Multiplicities();
-
-        NCollection_Array2<gp_Pnt> intermediate(1, u_npoles, 1, static_cast<int>(nv));
-        for (uint32_t j = 0; j < nv; ++j) {
-            for (int i = 1; i <= u_npoles; ++i) {
-                intermediate.SetValue(i, static_cast<int>(j) + 1, u_curves[j]->Pole(i));
-            }
-        }
-
-        // Stage 2: per-U-row interpolation along V (V is always periodic).
-        std::vector<Handle(Geom_BSplineCurve)> v_curves;
-        v_curves.reserve(u_npoles);
-        for (int i = 1; i <= u_npoles; ++i) {
-            Handle(HPntArray) row = new HPntArray(1, static_cast<int>(nv));
-            for (uint32_t j = 0; j < nv; ++j) {
-                row->SetValue(static_cast<int>(j) + 1, intermediate(i, static_cast<int>(j) + 1));
-            }
-            GeomAPI_Interpolate interp(row, v_params, /*periodic=*/true, tol);
-            interp.Perform();
-            if (!interp.IsDone()) return nullptr;
-            v_curves.push_back(interp.Curve());
-        }
-
-        const int v_degree = v_curves[0]->Degree();
-        const int v_npoles = v_curves[0]->NbPoles();
-        const NCollection_Array1<double>& v_knots = v_curves[0]->Knots();
-        const NCollection_Array1<int>&    v_mults = v_curves[0]->Multiplicities();
-
-        // Stage 3: assemble final M_pole × N_pole pole grid and build the
-        // surface with explicit periodic flags.
-        NCollection_Array2<gp_Pnt> final_poles(1, u_npoles, 1, v_npoles);
-        for (int i = 1; i <= u_npoles; ++i) {
-            for (int j = 1; j <= v_npoles; ++j) {
-                final_poles.SetValue(i, j, v_curves[i - 1]->Pole(j));
-            }
-        }
-
-        Handle(Geom_BSplineSurface) surface = new Geom_BSplineSurface(
-            final_poles,
-            u_knots, v_knots,
-            u_mults, v_mults,
-            u_degree, v_degree,
-            /*UPeriodic=*/u_periodic,
-            /*VPeriodic=*/true);
-        if (surface.IsNull()) return nullptr;
-
-        // Side face spans the full parametric domain.
-        double u1, u2, v1, v2;
-        surface->Bounds(u1, u2, v1, v2);
-        BRepBuilderAPI_MakeFace face_maker(surface, Precision::Confusion());
-        if (!face_maker.IsDone()) return nullptr;
-        TopoDS_Face side_face = face_maker.Face();
-
-        BRepBuilderAPI_Sewing sewing(1.0e-3);
-        sewing.Add(side_face);
-
-        // For non-periodic U, cap the two U-boundary loops with planar faces.
-        // For periodic U the surface is already closed into a torus — no caps.
-        if (!u_periodic) {
-            auto make_cap = [&](double u_at) -> TopoDS_Face {
-                Handle(Geom_Curve) iso = surface->UIso(u_at);
-                if (iso.IsNull()) return TopoDS_Face();
-                BRepBuilderAPI_MakeEdge em(iso, v1, v2);
-                if (!em.IsDone()) return TopoDS_Face();
-                BRepBuilderAPI_MakeWire wm(em.Edge());
-                if (!wm.IsDone()) return TopoDS_Face();
-                BRepBuilderAPI_MakeFace mf(wm.Wire(), true);
-                return mf.IsDone() ? mf.Face() : TopoDS_Face();
-            };
-            TopoDS_Face cap1 = make_cap(u1);
-            TopoDS_Face cap2 = make_cap(u2);
-            if (cap1.IsNull() || cap2.IsNull()) return nullptr;
-            sewing.Add(cap1);
-            sewing.Add(cap2);
-        }
-
-        sewing.Perform();
-        TopoDS_Shape sewn = sewing.SewedShape();
-        if (sewn.IsNull()) return nullptr;
-
-        TopoDS_Shell shell;
-        if (sewn.ShapeType() == TopAbs_SHELL) {
-            shell = TopoDS::Shell(sewn);
-        } else if (sewn.ShapeType() == TopAbs_SOLID) {
-            return std::make_unique<TopoDS_Shape>(sewn);
-        } else if (sewn.ShapeType() == TopAbs_FACE && u_periodic) {
-            // Full torus: single closed face → wrap manually.
-            BRep_Builder bb;
-            bb.MakeShell(shell);
-            bb.Add(shell, TopoDS::Face(sewn));
-            shell.Closed(true);
-        } else {
-            TopExp_Explorer exp(sewn, TopAbs_SHELL);
-            if (exp.More()) {
-                shell = TopoDS::Shell(exp.Current());
-            } else {
-                return nullptr;
-            }
-        }
-
-        BRepBuilderAPI_MakeSolid solid_maker(shell);
-        if (!solid_maker.IsDone()) return nullptr;
-        TopoDS_Solid solid = solid_maker.Solid();
-
-        // Ensure outward-facing orientation.
-        BRepClass3d_SolidClassifier classifier(
-            solid, gp_Pnt(0, 0, 0), Precision::Confusion());
-        if (classifier.State() == TopAbs_IN) {
-            solid.Reverse();
-        }
-
-        return std::make_unique<TopoDS_Shape>(solid);
-    } catch (const Standard_Failure&) {
-        return nullptr;
+    // Build uniform parameter arrays so that every column / row uses the
+    // SAME parametrization. With chord-length (the Interpolate default),
+    // columns of different total length get different knot vectors and
+    // the resulting tensor surface has parameter mismatches at +X axis
+    // (visible as boolean-intersect degeneracies). Uniform params avoid
+    // this since the input grid samples φ / θ at constant fractional
+    // intervals along each direction.
+    const int u_param_count = static_cast<int>(u_periodic ? nu + 1 : nu);
+    Handle(HRealArray) u_params = new HRealArray(1, u_param_count);
+    for (int k = 0; k < u_param_count; ++k) {
+        u_params->SetValue(k + 1, static_cast<double>(k) / static_cast<double>(nu));
     }
+    Handle(HRealArray) v_params = new HRealArray(1, static_cast<int>(nv + 1));
+    for (uint32_t k = 0; k <= nv; ++k) {
+        v_params->SetValue(static_cast<int>(k) + 1,
+                           static_cast<double>(k) / static_cast<double>(nv));
+    }
+
+    // Stage 1: per-V-column interpolation along U with uniform params.
+    std::vector<Handle(Geom_BSplineCurve)> u_curves;
+    u_curves.reserve(nv);
+    for (uint32_t j = 0; j < nv; ++j) {
+        Handle(HPntArray) col = new HPntArray(1, static_cast<int>(nu));
+        for (uint32_t i = 0; i < nu; ++i) {
+            const size_t idx = (static_cast<size_t>(i) * nv + j) * 3;
+            col->SetValue(static_cast<int>(i) + 1,
+                          gp_Pnt(coords[idx], coords[idx + 1], coords[idx + 2]));
+        }
+        GeomAPI_Interpolate interp(col, u_params, u_periodic, tol);
+        interp.Perform();
+        if (!interp.IsDone()) throw std::runtime_error("GeomAPI_Interpolate did not complete along U");
+        u_curves.push_back(interp.Curve());
+    }
+
+    // Capture U knot vector / multiplicities / degree from any column;
+    // GeomAPI_Interpolate uses the same chord-length parametrization for
+    // all columns since the V coordinate is uniform per column.
+    const int u_degree = u_curves[0]->Degree();
+    const int u_npoles = u_curves[0]->NbPoles();
+    const NCollection_Array1<double>& u_knots = u_curves[0]->Knots();
+    const NCollection_Array1<int>&    u_mults = u_curves[0]->Multiplicities();
+
+    NCollection_Array2<gp_Pnt> intermediate(1, u_npoles, 1, static_cast<int>(nv));
+    for (uint32_t j = 0; j < nv; ++j) {
+        for (int i = 1; i <= u_npoles; ++i) {
+            intermediate.SetValue(i, static_cast<int>(j) + 1, u_curves[j]->Pole(i));
+        }
+    }
+
+    // Stage 2: per-U-row interpolation along V (V is always periodic).
+    std::vector<Handle(Geom_BSplineCurve)> v_curves;
+    v_curves.reserve(u_npoles);
+    for (int i = 1; i <= u_npoles; ++i) {
+        Handle(HPntArray) row = new HPntArray(1, static_cast<int>(nv));
+        for (uint32_t j = 0; j < nv; ++j) {
+            row->SetValue(static_cast<int>(j) + 1, intermediate(i, static_cast<int>(j) + 1));
+        }
+        GeomAPI_Interpolate interp(row, v_params, /*periodic=*/true, tol);
+        interp.Perform();
+        if (!interp.IsDone()) throw std::runtime_error("GeomAPI_Interpolate did not complete along V");
+        v_curves.push_back(interp.Curve());
+    }
+
+    const int v_degree = v_curves[0]->Degree();
+    const int v_npoles = v_curves[0]->NbPoles();
+    const NCollection_Array1<double>& v_knots = v_curves[0]->Knots();
+    const NCollection_Array1<int>&    v_mults = v_curves[0]->Multiplicities();
+
+    // Stage 3: assemble final M_pole × N_pole pole grid and build the
+    // surface with explicit periodic flags.
+    NCollection_Array2<gp_Pnt> final_poles(1, u_npoles, 1, v_npoles);
+    for (int i = 1; i <= u_npoles; ++i) {
+        for (int j = 1; j <= v_npoles; ++j) {
+            final_poles.SetValue(i, j, v_curves[i - 1]->Pole(j));
+        }
+    }
+
+    Handle(Geom_BSplineSurface) surface = new Geom_BSplineSurface(
+        final_poles,
+        u_knots, v_knots,
+        u_mults, v_mults,
+        u_degree, v_degree,
+        /*UPeriodic=*/u_periodic,
+        /*VPeriodic=*/true);
+    if (surface.IsNull()) throw std::runtime_error("Geom_BSplineSurface construction failed");
+
+    // Side face spans the full parametric domain.
+    double u1, u2, v1, v2;
+    surface->Bounds(u1, u2, v1, v2);
+    BRepBuilderAPI_MakeFace face_maker(surface, Precision::Confusion());
+    if (!face_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeFace did not complete");
+    TopoDS_Face side_face = face_maker.Face();
+
+    BRepBuilderAPI_Sewing sewing(1.0e-3);
+    sewing.Add(side_face);
+
+    // For non-periodic U, cap the two U-boundary loops with planar faces.
+    // For periodic U the surface is already closed into a torus — no caps.
+    if (!u_periodic) {
+        auto make_cap = [&](double u_at) -> TopoDS_Face {
+            Handle(Geom_Curve) iso = surface->UIso(u_at);
+            if (iso.IsNull()) return TopoDS_Face();
+            BRepBuilderAPI_MakeEdge em(iso, v1, v2);
+            if (!em.IsDone()) return TopoDS_Face();
+            BRepBuilderAPI_MakeWire wm(em.Edge());
+            if (!wm.IsDone()) return TopoDS_Face();
+            BRepBuilderAPI_MakeFace mf(wm.Wire(), true);
+            return mf.IsDone() ? mf.Face() : TopoDS_Face();
+        };
+        TopoDS_Face cap1 = make_cap(u1);
+        TopoDS_Face cap2 = make_cap(u2);
+        if (cap1.IsNull() || cap2.IsNull()) throw std::runtime_error("could not cap the U boundaries");
+        sewing.Add(cap1);
+        sewing.Add(cap2);
+    }
+
+    sewing.Perform();
+    TopoDS_Shape sewn = sewing.SewedShape();
+    if (sewn.IsNull()) throw std::runtime_error("BRepBuilderAPI_Sewing produced no shape");
+
+    TopoDS_Shell shell;
+    if (sewn.ShapeType() == TopAbs_SHELL) {
+        shell = TopoDS::Shell(sewn);
+    } else if (sewn.ShapeType() == TopAbs_SOLID) {
+        return std::make_unique<TopoDS_Shape>(sewn);
+    } else if (sewn.ShapeType() == TopAbs_FACE && u_periodic) {
+        // Full torus: single closed face → wrap manually.
+        BRep_Builder bb;
+        bb.MakeShell(shell);
+        bb.Add(shell, TopoDS::Face(sewn));
+        shell.Closed(true);
+    } else {
+        TopExp_Explorer exp(sewn, TopAbs_SHELL);
+        if (exp.More()) {
+            shell = TopoDS::Shell(exp.Current());
+        } else {
+            throw std::runtime_error("sewing produced no shell");
+        }
+    }
+
+    BRepBuilderAPI_MakeSolid solid_maker(shell);
+    if (!solid_maker.IsDone()) throw std::runtime_error("BRepBuilderAPI_MakeSolid did not complete");
+    TopoDS_Solid solid = solid_maker.Solid();
+
+    // Ensure outward-facing orientation.
+    BRepClass3d_SolidClassifier classifier(
+        solid, gp_Pnt(0, 0, 0), Precision::Confusion());
+    if (classifier.State() == TopAbs_IN) {
+        solid.Reverse();
+    }
+
+    return std::make_unique<TopoDS_Shape>(solid);
 }
 
 // ==================== Streambuf bridges (ffi.cpp-internal) ====================
@@ -2165,12 +2062,11 @@ std::unique_ptr<TopoDS_Shape> read_brep_stream(
     auto shape = std::make_unique<TopoDS_Shape>();
     try {
         BinTools::Read(*shape, iss);
-    } catch (const Standard_Failure&) {
-        return nullptr;  // out_consumed deliberately untouched
+    } catch (const Standard_Failure& f) {
+        // OCCT raises this one without a message; out_consumed stays untouched.
+        throw std::runtime_error(std::string("BinTools::Read failed: ") + f.what());
     }
-    if (shape->IsNull()) {
-        return nullptr;  // ditto
-    }
+    if (shape->IsNull()) throw std::runtime_error("BinTools::Read produced no shape");
 
     // clear() is load-bearing: a payload read to its last byte leaves eofbit set, and
     // tellg()'s sentry then turns that into failbit and returns -1.
@@ -2179,15 +2075,11 @@ std::unique_ptr<TopoDS_Shape> read_brep_stream(
     return shape;
 }
 
-bool write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer) {
+void write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     RustWriteStreambuf sbuf(writer);
     std::ostream os(&sbuf);
-    try {
-        BinTools::Write(shape, os);
-    } catch (const Standard_Failure&) {
-        return false;
-    }
-    return os.good();
+    BinTools::Write(shape, os);
+    if (!os.good()) throw std::runtime_error("stream write failed");
 }
 
 #ifndef FEATURE_COLOR
@@ -2199,23 +2091,19 @@ std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader) {
     STEPControl_Reader step_reader;
     IFSelect_ReturnStatus status = step_reader.ReadStream("stream", is);
 
-    if (status != IFSelect_RetDone) {
-        return nullptr;
-    }
+    if (status != IFSelect_RetDone) throw std::runtime_error("STEPControl_Reader could not read the stream");
 
     step_reader.TransferRoots(Message_ProgressRange());
     return std::make_unique<TopoDS_Shape>(
         try_sew_orphan_faces(step_reader.OneShape(), nullptr));
 }
 
-bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer) {
+void write_step_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     RustWriteStreambuf sbuf(writer);
     std::ostream os(&sbuf);
     STEPControl_Writer step_writer;
-    if (step_writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone) {
-        return false;
-    }
-    return step_writer.WriteStream(os) == IFSelect_RetDone;
+    if (step_writer.Transfer(shape, STEPControl_AsIs) != IFSelect_RetDone) throw std::runtime_error("STEPControl_Writer could not transfer the shape");
+    if (step_writer.WriteStream(os) != IFSelect_RetDone) throw std::runtime_error("STEPControl_Writer could not write the stream");
 }
 #endif // !FEATURE_COLOR
 
@@ -2274,135 +2162,121 @@ std::unique_ptr<TopoDS_Shape> read_step_color_stream(
     rust::Vec<uint64_t>& out_ids,
     rust::Vec<float>&    out_rgb)
 {
-    try {
-        // Create XDE document directly — avoids XCAFApp_Application which
-        // pulls in visualization libs (TKXCAFPrs/TKTPrsStd) built with
-        // BUILD_MODULE_Visualization=OFF.  Handle<> ref-counts ownership.
-        Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
+    // Create XDE document directly — avoids XCAFApp_Application which
+    // pulls in visualization libs (TKXCAFPrs/TKTPrsStd) built with
+    // BUILD_MODULE_Visualization=OFF.  Handle<> ref-counts ownership.
+    Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
 
-        STEPCAFControl_Reader cafreader;
-        cafreader.SetColorMode(true);
+    STEPCAFControl_Reader cafreader;
+    cafreader.SetColorMode(true);
 
-        RustReadStreambuf sbuf(reader);
-        std::istream is(&sbuf);
-        if (cafreader.ReadStream("stream", is) != IFSelect_RetDone) {
-            return nullptr;
-        }
-        if (!cafreader.Transfer(doc)) {
-            return nullptr;
-        }
+    RustReadStreambuf sbuf(reader);
+    std::istream is(&sbuf);
+    if (cafreader.ReadStream("stream", is) != IFSelect_RetDone) throw std::runtime_error("STEPCAFControl_Reader could not read the stream");
+    if (!cafreader.Transfer(doc)) throw std::runtime_error("STEPCAFControl_Reader could not transfer to the document");
 
-        Handle(XCAFDoc_ShapeTool) shapeTool =
-            XCAFDoc_DocumentTool::ShapeTool(doc->Main());
-        Handle(XCAFDoc_ColorTool) colorTool =
-            XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    Handle(XCAFDoc_ShapeTool) shapeTool =
+        XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) colorTool =
+        XCAFDoc_DocumentTool::ColorTool(doc->Main());
 
-        // Collect all free shapes into a compound.
-        NCollection_Sequence<TDF_Label> roots;
-        shapeTool->GetFreeShapes(roots);
+    // Collect all free shapes into a compound.
+    NCollection_Sequence<TDF_Label> roots;
+    shapeTool->GetFreeShapes(roots);
 
-        BRep_Builder builder;
-        TopoDS_Compound compound;
-        builder.MakeCompound(compound);
-        for (int i = 1; i <= roots.Length(); i++) {
-            builder.Add(compound, shapeTool->GetShape(roots.Value(i)));
-        }
-
-        std::unordered_map<uint64_t, std::array<float, 3>> colorMap;
-        collect_colors(doc, colorTool, colorMap);
-
-        // Recover Solids from disjoint shells / loose faces (#129); also remaps
-        // colorMap keys for faces whose TShape* changed during sewing.
-        TopoDS_Shape post = try_sew_orphan_faces(compound, &colorMap);
-
-        // Walk the POST-processed shape so sewing's new TShape* are picked up, and
-        // entries it no longer holds are dropped by not being reached.
-        auto emit = [&](const TopoDS_Shape& sub) {
-            uint64_t id = reinterpret_cast<uint64_t>(sub.TShape().get());
-            auto it = colorMap.find(id);
-            if (it == colorMap.end()) return;
-            out_ids.push_back(id);
-            out_rgb.push_back(it->second[0]);
-            out_rgb.push_back(it->second[1]);
-            out_rgb.push_back(it->second[2]);
-        };
-        for (TopExp_Explorer ex(post, TopAbs_FACE); ex.More(); ex.Next()) {
-            emit(ex.Current());
-        }
-        for (TopExp_Explorer ex(post, TopAbs_SOLID); ex.More(); ex.Next()) {
-            emit(ex.Current());
-        }
-
-        return std::make_unique<TopoDS_Shape>(post);
-    } catch (const Standard_Failure&) {
-        return nullptr;
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    for (int i = 1; i <= roots.Length(); i++) {
+        builder.Add(compound, shapeTool->GetShape(roots.Value(i)));
     }
+
+    std::unordered_map<uint64_t, std::array<float, 3>> colorMap;
+    collect_colors(doc, colorTool, colorMap);
+
+    // Recover Solids from disjoint shells / loose faces (#129); also remaps
+    // colorMap keys for faces whose TShape* changed during sewing.
+    TopoDS_Shape post = try_sew_orphan_faces(compound, &colorMap);
+
+    // Walk the POST-processed shape so sewing's new TShape* are picked up, and
+    // entries it no longer holds are dropped by not being reached.
+    auto emit = [&](const TopoDS_Shape& sub) {
+        uint64_t id = reinterpret_cast<uint64_t>(sub.TShape().get());
+        auto it = colorMap.find(id);
+        if (it == colorMap.end()) return;
+        out_ids.push_back(id);
+        out_rgb.push_back(it->second[0]);
+        out_rgb.push_back(it->second[1]);
+        out_rgb.push_back(it->second[2]);
+    };
+    for (TopExp_Explorer ex(post, TopAbs_FACE); ex.More(); ex.Next()) {
+        emit(ex.Current());
+    }
+    for (TopExp_Explorer ex(post, TopAbs_SOLID); ex.More(); ex.Next()) {
+        emit(ex.Current());
+    }
+
+    return std::make_unique<TopoDS_Shape>(post);
 }
 
-bool write_step_color_stream(
+void write_step_color_stream(
     const TopoDS_Shape&         shape,
     rust::Slice<const uint64_t> ids,
     rust::Slice<const float>    rgb,
     RustWriter&                 writer)
 {
-    try {
-        Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
+    Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
 
-        Handle(XCAFDoc_ShapeTool) shapeTool =
-            XCAFDoc_DocumentTool::ShapeTool(doc->Main());
-        Handle(XCAFDoc_ColorTool) colorTool =
-            XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    Handle(XCAFDoc_ShapeTool) shapeTool =
+        XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) colorTool =
+        XCAFDoc_DocumentTool::ColorTool(doc->Main());
 
-        // Register the root shape.
-        TDF_Label rootLabel = shapeTool->AddShape(shape, false);
+    // Register the root shape.
+    TDF_Label rootLabel = shapeTool->AddShape(shape, false);
 
-        // One lookup for both levels: which explorer finds an id decides the level
-        // it is written at.
-        std::unordered_map<uint64_t, std::array<float, 3>> colorLookup;
-        for (size_t i = 0; i < ids.size(); i++) {
-            colorLookup[ids[i]] = {rgb[3*i], rgb[3*i+1], rgb[3*i+2]};
-        }
-
-        // Find/create the sub-shape label of `sub` and paint it.
-        auto set_color = [&](const TopoDS_Shape& sub, const std::array<float, 3>& c) {
-            TDF_Label label;
-            if (!shapeTool->FindSubShape(rootLabel, sub, label)) {
-                label = shapeTool->AddSubShape(rootLabel, sub);
-            }
-            Quantity_Color color(c[0], c[1], c[2], Quantity_TOC_RGB);
-            colorTool->SetColor(label, color, XCAFDoc_ColorSurf);
-        };
-
-        // Solids first: a face style is the more specific one and must be set after.
-        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
-            const TopoDS_Shape& solid = ex.Current();
-            auto it = colorLookup.find(
-                reinterpret_cast<uint64_t>(solid.TShape().get()));
-            if (it == colorLookup.end()) continue;
-            set_color(solid, it->second);
-        }
-
-        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            const TopoDS_Shape& face = ex.Current();
-            auto it = colorLookup.find(
-                reinterpret_cast<uint64_t>(face.TShape().get()));
-            if (it == colorLookup.end()) continue;
-            set_color(face, it->second);
-        }
-
-        // Transfer XDE doc to STEP model and write to stream.
-        STEPCAFControl_Writer cafwriter;
-        cafwriter.SetColorMode(true);
-        if (!cafwriter.Transfer(doc)) {
-            return false;
-        }
-
-        RustWriteStreambuf sbuf(writer);
-        std::ostream os(&sbuf);
-        return cafwriter.ChangeWriter().WriteStream(os) == IFSelect_RetDone;
-    } catch (const Standard_Failure&) {
-        return false;
+    // One lookup for both levels: which explorer finds an id decides the level
+    // it is written at.
+    std::unordered_map<uint64_t, std::array<float, 3>> colorLookup;
+    for (size_t i = 0; i < ids.size(); i++) {
+        colorLookup[ids[i]] = {rgb[3*i], rgb[3*i+1], rgb[3*i+2]};
     }
+
+    // Find/create the sub-shape label of `sub` and paint it.
+    auto set_color = [&](const TopoDS_Shape& sub, const std::array<float, 3>& c) {
+        TDF_Label label;
+        if (!shapeTool->FindSubShape(rootLabel, sub, label)) {
+            label = shapeTool->AddSubShape(rootLabel, sub);
+        }
+        Quantity_Color color(c[0], c[1], c[2], Quantity_TOC_RGB);
+        colorTool->SetColor(label, color, XCAFDoc_ColorSurf);
+    };
+
+    // Solids first: a face style is the more specific one and must be set after.
+    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+        const TopoDS_Shape& solid = ex.Current();
+        auto it = colorLookup.find(
+            reinterpret_cast<uint64_t>(solid.TShape().get()));
+        if (it == colorLookup.end()) continue;
+        set_color(solid, it->second);
+    }
+
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        const TopoDS_Shape& face = ex.Current();
+        auto it = colorLookup.find(
+            reinterpret_cast<uint64_t>(face.TShape().get()));
+        if (it == colorLookup.end()) continue;
+        set_color(face, it->second);
+    }
+
+    // Transfer XDE doc to STEP model and write to stream.
+    STEPCAFControl_Writer cafwriter;
+    cafwriter.SetColorMode(true);
+    if (!cafwriter.Transfer(doc)) throw std::runtime_error("STEPCAFControl_Writer could not transfer the document");
+
+    RustWriteStreambuf sbuf(writer);
+    std::ostream os(&sbuf);
+    if (cafwriter.ChangeWriter().WriteStream(os) != IFSelect_RetDone) throw std::runtime_error("STEPCAFControl_Writer could not write the stream");
 }
 
 } // namespace cadrum

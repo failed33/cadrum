@@ -8,28 +8,9 @@ pub struct Edge {
 	pub(crate) inner: cxx::UniquePtr<ffi::TopoDS_Edge>,
 }
 
-impl Edge {
-	/// Wrap a FFI-returned `TopoDS_Edge` into `Result<Edge, Error>`, checking
-	/// for null. This is the **only** constructor for `Edge` from FFI: all
-	/// call sites must go through this function so that no null `TopoDS_Edge`
-	/// can silently enter the Rust side.
-	///
-	/// For paths where null is impossible by construction (Clone, Transform,
-	/// iterators — all of which wrap an already-valid edge), callers use
-	/// `.expect("...")` with a descriptive message; the panic is unreachable
-	/// in practice but serves as a defensive marker.
-	pub(crate) fn try_from_ffi(inner: cxx::UniquePtr<ffi::TopoDS_Edge>, msg: String) -> Result<Self, Error> {
-		if inner.is_null() {
-			Err(Error::Edge(msg))
-		} else {
-			Ok(Edge { inner })
-		}
-	}
-}
-
 impl Clone for Edge {
 	fn clone(&self) -> Self {
-		Edge::try_from_ffi(ffi::deep_copy_edge(&self.inner), "Edge::clone: deep_copy_edge returned null".into()).expect("Edge::clone: unexpected null from deep_copy_edge (this is a bug)")
+		Edge { inner: ffi::deep_copy_edge(&self.inner).unwrap_or_else(|e| panic!("Edge::clone: {}", e.what())) }
 	}
 }
 
@@ -92,38 +73,30 @@ impl EdgeStruct for Edge {
 	}
 
 	fn helix(radius: f64, pitch: f64, height: f64, axis: DVec3, x_ref: DVec3) -> Result<Self, Error> {
-		let inner = ffi::make_helix_edge(axis.x, axis.y, axis.z, x_ref.x, x_ref.y, x_ref.z, radius, pitch, height);
-		Edge::try_from_ffi(inner, format!("helix: degenerate params (radius={radius}, pitch={pitch}, height={height}, axis={axis:?}, x_ref={x_ref:?})"))
+		let inner = ffi::make_helix_edge(axis.x, axis.y, axis.z, x_ref.x, x_ref.y, x_ref.z, radius, pitch, height).map_err(|e| Error::Edge(format!("helix: radius={radius}, pitch={pitch}, height={height}, axis={axis:?}, x_ref={x_ref:?}: {}", e.what())))?;
+		Ok(Edge { inner })
 	}
 
 	fn polygon<'a>(points: impl IntoIterator<Item = &'a DVec3>) -> Result<Vec<Self>, Error> {
 		let coords: Vec<f64> = points.into_iter().flat_map(|p| [p.x, p.y, p.z]).collect();
-		let cxx_vec = ffi::make_polygon_edges(&coords);
-		// C++ 側は失敗時に空ベクタを返す (null ではない)。点数不足や
-		// OCCT の MakePolygon 失敗で empty になるので、それを Error::Edge に変換。
-		if cxx_vec.is_empty() {
-			return Err(Error::Edge(format!("polygon: construction failed (point count = {}, need ≥ 3 non-degenerate)", coords.len() / 3)));
-		}
-		// CxxVector<TopoDS_Edge> → Vec<Edge>: pull each element out into a
-		// UniquePtr<TopoDS_Edge> via deep_copy_edge so we own the topology.
-		// deep_copy_edge は既に有効な edge の複製なので null にはならない想定、
-		// 万一返った場合は Error::Edge で failfast する。
-		cxx_vec.iter().map(|e| Edge::try_from_ffi(ffi::deep_copy_edge(e), "polygon: deep_copy_edge returned null".into())).collect()
+		let edges = ffi::make_polygon_edges(&coords).map_err(|e| Error::Edge(format!("polygon: {} point(s): {}", coords.len() / 3, e.what())))?;
+		// deep_copy_edge so each Edge owns its topology instead of borrowing the vector.
+		Ok(edges.iter().map(|e| Edge { inner: ffi::deep_copy_edge(e).unwrap_or_else(|err| panic!("polygon: {}", err.what())) }).collect())
 	}
 
 	fn circle(radius: f64, axis: DVec3) -> Result<Self, Error> {
-		let inner = ffi::make_circle_edge(axis.x, axis.y, axis.z, radius);
-		Edge::try_from_ffi(inner, format!("circle: invalid params (radius={radius}, axis={axis:?})"))
+		let inner = ffi::make_circle_edge(axis.x, axis.y, axis.z, radius).map_err(|e| Error::Edge(format!("circle: radius={radius}, axis={axis:?}: {}", e.what())))?;
+		Ok(Edge { inner })
 	}
 
 	fn line(a: DVec3, b: DVec3) -> Result<Self, Error> {
-		let inner = ffi::make_line_edge(a.x, a.y, a.z, b.x, b.y, b.z);
-		Edge::try_from_ffi(inner, format!("line: zero-length segment (a={a:?}, b={b:?})"))
+		let inner = ffi::make_line_edge(a.x, a.y, a.z, b.x, b.y, b.z).map_err(|e| Error::Edge(format!("line: a={a:?}, b={b:?}: {}", e.what())))?;
+		Ok(Edge { inner })
 	}
 
 	fn arc_3pts(start: DVec3, mid: DVec3, end: DVec3) -> Result<Self, Error> {
-		let inner = ffi::make_arc_edge(start.x, start.y, start.z, mid.x, mid.y, mid.z, end.x, end.y, end.z);
-		Edge::try_from_ffi(inner, format!("arc_3pts: collinear or degenerate points (start={start:?}, mid={mid:?}, end={end:?})"))
+		let inner = ffi::make_arc_edge(start.x, start.y, start.z, mid.x, mid.y, mid.z, end.x, end.y, end.z).map_err(|e| Error::Edge(format!("arc_3pts: start={start:?}, mid={mid:?}, end={end:?}: {}", e.what())))?;
+		Ok(Edge { inner })
 	}
 
 	fn bspline<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd) -> Result<Self, Error> {
@@ -161,8 +134,8 @@ impl EdgeStruct for Edge {
 			BSplineEnd::Clamped { start: s, end: e } => (2u32, s.x, s.y, s.z, e.x, e.y, e.z),
 		};
 
-		let inner = ffi::make_bspline_edge(&coords, kind, sx, sy, sz, ex, ey, ez);
-		Edge::try_from_ffi(inner, format!("bspline: OCCT GeomAPI_Interpolate failed ({} points, end={end:?})", pts.len()))
+		let inner = ffi::make_bspline_edge(&coords, kind, sx, sy, sz, ex, ey, ez).map_err(|e| Error::Edge(format!("bspline: {} points, end={end:?}: {}", pts.len(), e.what())))?;
+		Ok(Edge { inner })
 	}
 }
 
@@ -170,24 +143,27 @@ impl EdgeStruct for Edge {
 // 上の `impl EdgeStruct for Edge` に統合済み。エッジ列 (= wire) はイテレータ
 // 慣用句で扱い、専用トレイトは持たない。
 
-// Transform は trait 要件で `-> Self` を返すため Result にできない。
-// 有効な edge に対するアフィン変換は原理的に失敗しない (OCCT 側でも null を
-// 返す経路はない) ので、万一 null が返った場合は expect() で failfast する。
+// `Transform` returns `Self`, and an affine transform of a valid edge only throws
+// on a degenerate axis or plane — a caller bug, so it panics with OCCT's message.
 impl Transform for Edge {
 	fn translate(self, t: DVec3) -> Self {
-		Edge::try_from_ffi(ffi::translate_edge(&self.inner, t.x, t.y, t.z), "Edge::translate: null from FFI".into()).expect("Edge::translate: unexpected null from translate_edge (this is a bug)")
+		Edge { inner: ffi::translate_edge(&self.inner, t.x, t.y, t.z).unwrap_or_else(|e| panic!("Edge::translate: {}", e.what())) }
 	}
 
 	fn rotate(self, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Self {
-		Edge::try_from_ffi(ffi::rotate_edge(&self.inner, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle), "Edge::rotate: null from FFI".into()).expect("Edge::rotate: unexpected null from rotate_edge (this is a bug)")
+		Edge {
+			inner: ffi::rotate_edge(&self.inner, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle).unwrap_or_else(|e| panic!("Edge::rotate: {}", e.what())),
+		}
 	}
 
 	fn scale(self, center: DVec3, factor: f64) -> Self {
-		Edge::try_from_ffi(ffi::scale_edge(&self.inner, center.x, center.y, center.z, factor), "Edge::scale: null from FFI".into()).expect("Edge::scale: unexpected null from scale_edge (this is a bug)")
+		Edge { inner: ffi::scale_edge(&self.inner, center.x, center.y, center.z, factor).unwrap_or_else(|e| panic!("Edge::scale: {}", e.what())) }
 	}
 
 	fn mirror(self, plane_origin: DVec3, plane_normal: DVec3) -> Self {
-		Edge::try_from_ffi(ffi::mirror_edge(&self.inner, plane_origin.x, plane_origin.y, plane_origin.z, plane_normal.x, plane_normal.y, plane_normal.z), "Edge::mirror: null from FFI".into()).expect("Edge::mirror: unexpected null from mirror_edge (this is a bug)")
+		Edge {
+			inner: ffi::mirror_edge(&self.inner, plane_origin.x, plane_origin.y, plane_origin.z, plane_normal.x, plane_normal.y, plane_normal.z).unwrap_or_else(|e| panic!("Edge::mirror: {}", e.what())),
+		}
 	}
 }
 

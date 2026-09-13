@@ -30,13 +30,13 @@ struct MeshData;
 // through XCAF (`read_step_color_stream` etc.) instead.
 #ifndef FEATURE_COLOR
 std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader);
-bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer);
+void write_step_stream(const TopoDS_Shape& shape, RustWriter& writer);
 #endif
 // `out_consumed` = length of the BinTools payload, where Rust's color trailer
-// begins. Written ONLY on success; on failure nullptr comes back and it is untouched.
+// begins. Written ONLY on success; a throw leaves it untouched.
 std::unique_ptr<TopoDS_Shape> read_brep_stream(
     rust::Slice<const uint8_t> data, size_t& out_consumed);
-bool write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer);
+void write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer);
 
 // ==================== Shape Constructors ====================
 
@@ -98,7 +98,7 @@ std::unique_ptr<TopoDS_Shape> builder_clean(
 
 // Shell (hollow) the solid by removing `open_faces` and offsetting the
 // remaining faces by `thickness` via BRepOffsetAPI_MakeThickSolid. Negative
-// thickness hollows inward, positive thickens outward. Returns nullptr on
+// thickness hollows inward, positive thickens outward. Throws on
 // failure (e.g. self-intersecting offset at sharp corners).
 //
 // `out_history`: flat [post_id, src_id] face-derivation pairs (Modified(),
@@ -111,7 +111,7 @@ std::unique_ptr<TopoDS_Shape> builder_thick_solid(
 
 // Fillet the given edges of `solid` with a uniform radius using
 // BRepFilletAPI_MakeFillet. Empty `edges` is a no-op (returns a shallow
-// copy of `solid`). Returns nullptr on OCCT failure (radius too large,
+// copy of `solid`). Throws on OCCT failure (radius too large,
 // tangent discontinuity, edges not belonging to `solid`, etc.).
 //
 // `out_history`: flat [post_id, src_id] pairs (Modified(), identity for
@@ -124,7 +124,7 @@ std::unique_ptr<TopoDS_Shape> builder_fillet(
 
 // Chamfer (symmetric bevel) the given edges of `solid` with a uniform
 // distance using BRepFilletAPI_MakeChamfer. Empty `edges` is a no-op
-// (returns a shallow copy of `solid`). Returns nullptr on OCCT failure
+// (returns a shallow copy of `solid`). Throws on OCCT failure
 // (distance too large, tangent discontinuity, edges not belonging to
 // `solid`, etc.).
 //
@@ -244,7 +244,7 @@ std::unique_ptr<TopoDS_Edge> make_line_edge(
 
 // Construct a circular arc edge through three points (start, mid, end).
 // `mid` must not be collinear with `start` and `end`. On degenerate input
-// OCCT returns nullptr.
+// OCCT throws.
 std::unique_ptr<TopoDS_Edge> make_arc_edge(
     double sx, double sy, double sz,
     double mx, double my, double mz,
@@ -259,7 +259,7 @@ std::unique_ptr<TopoDS_Edge> make_arc_edge(
 //   0 = Periodic (C² periodic; tangent args ignored)
 //   1 = NotAKnot (open, OCCT default; tangent args ignored)
 //   2 = Clamped  (open, explicit start/end tangents in (sx,sy,sz)/(ex,ey,ez))
-// Returns nullptr on any failure.
+// Throws on any failure.
 std::unique_ptr<TopoDS_Edge> make_bspline_edge(
     rust::Slice<const double> coords,
     uint32_t end_kind,
@@ -364,7 +364,7 @@ std::unique_ptr<TopoDS_Shape> make_loft(
 // Sew (stitch) free faces into a single closed shell and upgrade it to a
 // solid via BRepBuilderAPI_MakeSolid. The sewn result must contain exactly
 // one closed shell — gaps wider than `tolerance` (open shell), leftover free
-// faces, or multiple disconnected shells all return nullptr. The solid is
+// faces, or multiple disconnected shells all throw. The solid is
 // oriented with BRepLib::OrientClosedSolid so the enclosed volume is
 // positive regardless of input face orientation.
 std::unique_ptr<TopoDS_Shape> make_sewn_solid(
@@ -372,7 +372,7 @@ std::unique_ptr<TopoDS_Shape> make_sewn_solid(
     double tolerance);
 
 // Offset the given faces of `shape` by signed `offset` along their normals,
-// extending their neighbours; nullptr when OCCT rejects a self-intersecting offset.
+// extending their neighbours; throws when OCCT rejects a self-intersecting offset.
 std::unique_ptr<TopoDS_Shape> make_offset(
     const TopoDS_Shape& shape,
     const std::vector<TopoDS_Face>& faces,
@@ -384,7 +384,7 @@ std::unique_ptr<TopoDS_Shape> make_offset(
 // V direction (cross-section, j index) is always periodic.
 // U direction (longitudinal, i index) is periodic iff `u_periodic=true`
 // (producing a torus); otherwise the U-ends are capped with planar faces
-// (producing a pipe). Returns nullptr on any OCCT failure.
+// (producing a pipe). Throws on any OCCT failure.
 std::unique_ptr<TopoDS_Shape> make_bspline_solid(
     rust::Slice<const double> coords,
     uint32_t nu, uint32_t nv,
@@ -415,7 +415,7 @@ void face_center_of_mass(const TopoDS_Face& face,
 // Returns the closest point on the (trimmed) face surface and the outward
 // face normal there. `nx/ny/nz` is the zero vector when the projector
 // cannot define a normal at the closest hit (degenerate surface point).
-// Returns false on catastrophic OCCT failure.
+// Throws on OCCT failure.
 bool face_project_point(const TopoDS_Face& face,
     double px, double py, double pz,
     double& cpx, double& cpy, double& cpz,
@@ -431,7 +431,7 @@ namespace cadrum {
 
 // `out_ids` = TShape* of each colored sub-shape, `out_rgb` = flat [r,g,b,...] in
 // OCC native space. An id is a FACE's or a SOLID's — a styled_item targets either.
-// Returns nullptr on failure.
+// Throws on failure.
 std::unique_ptr<TopoDS_Shape> read_step_color_stream(
     RustReader&          reader,
     rust::Vec<uint64_t>& out_ids,
@@ -439,7 +439,7 @@ std::unique_ptr<TopoDS_Shape> read_step_color_stream(
 
 // A solid id is written as one styled_item on that solid; a face style, being the
 // more specific one, overrides it.
-bool write_step_color_stream(
+void write_step_color_stream(
     const TopoDS_Shape&         shape,
     rust::Slice<const uint64_t> ids,
     rust::Slice<const float>    rgb,

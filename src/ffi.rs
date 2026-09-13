@@ -33,13 +33,13 @@ mod ffi_bridge {
 		// Plain STEP I/O — used only without `color` feature.
 		// With color, STEP goes through XCAF (`read_step_color_stream` etc.).
 		#[cfg(not(feature = "color"))]
-		fn read_step_stream(reader: &mut RustReader) -> UniquePtr<TopoDS_Shape>;
+		fn read_step_stream(reader: &mut RustReader) -> Result<UniquePtr<TopoDS_Shape>>;
 		#[cfg(not(feature = "color"))]
-		fn write_step_stream(shape: &TopoDS_Shape, writer: &mut RustWriter) -> bool;
+		fn write_step_stream(shape: &TopoDS_Shape, writer: &mut RustWriter) -> Result<()>;
 		// `out_consumed` = payload length, where the color trailer begins. Written only
 		// when the returned pointer is non-null.
-		fn read_brep_stream(data: &[u8], out_consumed: &mut usize) -> UniquePtr<TopoDS_Shape>;
-		fn write_brep_stream(shape: &TopoDS_Shape, writer: &mut RustWriter) -> bool;
+		fn read_brep_stream(data: &[u8], out_consumed: &mut usize) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn write_brep_stream(shape: &TopoDS_Shape, writer: &mut RustWriter) -> Result<()>;
 
 		// ==================== Shape Constructors ====================
 
@@ -62,38 +62,38 @@ mod ffi_bridge {
 		// ==================== Colored STEP I/O (color feature only) ====================
 
 		#[cfg(feature = "color")]
-		fn read_step_color_stream(reader: &mut RustReader, out_ids: &mut Vec<u64>, out_rgb: &mut Vec<f32>) -> UniquePtr<TopoDS_Shape>;
+		fn read_step_color_stream(reader: &mut RustReader, out_ids: &mut Vec<u64>, out_rgb: &mut Vec<f32>) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		#[cfg(feature = "color")]
-		fn write_step_color_stream(shape: &TopoDS_Shape, ids: &[u64], rgb: &[f32], writer: &mut RustWriter) -> bool;
+		fn write_step_color_stream(shape: &TopoDS_Shape, ids: &[u64], rgb: &[f32], writer: &mut RustWriter) -> Result<()>;
 
 		// ==================== Builders (solid → solid with history) ====================
 
 		// Evaluate any boolean expression on N solids via BOPAlgo_CellsBuilder.
 		// `clauses` は DIMACS-flat DNF (`+i` = solids[i-1] を take、`-i` = avoid、`0` = clause 終端)。
 		// `out_history` の形式は builder_boolean と同じ。
-		fn builder_cells(solids: &CxxVector<TopoDS_Shape>, clauses: &[i64], out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
+		fn builder_cells(solids: &CxxVector<TopoDS_Shape>, clauses: &[i64], out_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		// Unify shared faces. `out_history` receives flat [new_id, old_id, ...]
 		// pairs (same layout as `builder_boolean`), used by Solid::clean to populate
 		// `Solid::history` and remap the colormap when color is enabled.
-		fn builder_clean(shape: &TopoDS_Shape, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
+		fn builder_clean(shape: &TopoDS_Shape, out_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		// shell/fillet/chamfer fill `out_history` with flat [post_id, src_id]
 		// pairs (same layout as builder_cells) → Solid::history + colormap remap.
-		fn builder_thick_solid(solid: &TopoDS_Shape, open_faces: &CxxVector<TopoDS_Face>, thickness: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-		fn builder_fillet(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, radius: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-		fn builder_chamfer(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, distance: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
+		fn builder_thick_solid(solid: &TopoDS_Shape, open_faces: &CxxVector<TopoDS_Face>, thickness: f64, out_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn builder_fillet(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, radius: f64, out_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn builder_chamfer(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, distance: f64, out_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		// ==================== Transforms (solid → solid, no history) ====================
 
 		fn transform_translate(shape: &TopoDS_Shape, tx: f64, ty: f64, tz: f64) -> UniquePtr<TopoDS_Shape>;
 
-		fn transform_rotate(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> UniquePtr<TopoDS_Shape>;
+		fn transform_rotate(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> Result<UniquePtr<TopoDS_Shape>>;
 
-		fn transform_scale(shape: &TopoDS_Shape, cx: f64, cy: f64, cz: f64, factor: f64) -> UniquePtr<TopoDS_Shape>;
+		fn transform_scale(shape: &TopoDS_Shape, cx: f64, cy: f64, cz: f64, factor: f64) -> Result<UniquePtr<TopoDS_Shape>>;
 
-		fn transform_mirror(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> UniquePtr<TopoDS_Shape>;
+		fn transform_mirror(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		// ==================== Shape Queries ====================
 
@@ -139,32 +139,32 @@ mod ffi_bridge {
 
 		fn edge_approximation_segments(edge: &TopoDS_Edge, linear: f64, angular: f64, relative: bool) -> Vec<f64>;
 
-		fn make_helix_edge(ax: f64, ay: f64, az: f64, xrx: f64, xry: f64, xrz: f64, radius: f64, pitch: f64, height: f64) -> UniquePtr<TopoDS_Edge>;
-		fn make_polygon_edges(coords: &[f64]) -> UniquePtr<CxxVector<TopoDS_Edge>>;
-		fn make_circle_edge(ax: f64, ay: f64, az: f64, radius: f64) -> UniquePtr<TopoDS_Edge>;
-		fn make_line_edge(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64) -> UniquePtr<TopoDS_Edge>;
-		fn make_arc_edge(sx: f64, sy: f64, sz: f64, mx: f64, my: f64, mz: f64, ex: f64, ey: f64, ez: f64) -> UniquePtr<TopoDS_Edge>;
-		fn make_bspline_edge(coords: &[f64], end_kind: u32, sx: f64, sy: f64, sz: f64, ex: f64, ey: f64, ez: f64) -> UniquePtr<TopoDS_Edge>;
+		fn make_helix_edge(ax: f64, ay: f64, az: f64, xrx: f64, xry: f64, xrz: f64, radius: f64, pitch: f64, height: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn make_polygon_edges(coords: &[f64]) -> Result<UniquePtr<CxxVector<TopoDS_Edge>>>;
+		fn make_circle_edge(ax: f64, ay: f64, az: f64, radius: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn make_line_edge(ax: f64, ay: f64, az: f64, bx: f64, by: f64, bz: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn make_arc_edge(sx: f64, sy: f64, sz: f64, mx: f64, my: f64, mz: f64, ex: f64, ey: f64, ez: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn make_bspline_edge(coords: &[f64], end_kind: u32, sx: f64, sy: f64, sz: f64, ex: f64, ey: f64, ez: f64) -> Result<UniquePtr<TopoDS_Edge>>;
 
 		fn edge_endpoints(edge: &TopoDS_Edge, sx: &mut f64, sy: &mut f64, sz: &mut f64, ex: &mut f64, ey: &mut f64, ez: &mut f64);
 		fn edge_tangents(edge: &TopoDS_Edge, sx: &mut f64, sy: &mut f64, sz: &mut f64, ex: &mut f64, ey: &mut f64, ez: &mut f64);
 		fn precision_confusion() -> f64;
 		fn edge_project_point(edge: &TopoDS_Edge, px: f64, py: f64, pz: f64, cpx: &mut f64, cpy: &mut f64, cpz: &mut f64, tx: &mut f64, ty: &mut f64, tz: &mut f64) -> bool;
 
-		fn deep_copy_edge(edge: &TopoDS_Edge) -> UniquePtr<TopoDS_Edge>;
+		fn deep_copy_edge(edge: &TopoDS_Edge) -> Result<UniquePtr<TopoDS_Edge>>;
 
-		fn translate_edge(edge: &TopoDS_Edge, tx: f64, ty: f64, tz: f64) -> UniquePtr<TopoDS_Edge>;
-		fn rotate_edge(edge: &TopoDS_Edge, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> UniquePtr<TopoDS_Edge>;
-		fn scale_edge(edge: &TopoDS_Edge, cx: f64, cy: f64, cz: f64, factor: f64) -> UniquePtr<TopoDS_Edge>;
-		fn mirror_edge(edge: &TopoDS_Edge, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> UniquePtr<TopoDS_Edge>;
+		fn translate_edge(edge: &TopoDS_Edge, tx: f64, ty: f64, tz: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn rotate_edge(edge: &TopoDS_Edge, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn scale_edge(edge: &TopoDS_Edge, cx: f64, cy: f64, cz: f64, factor: f64) -> Result<UniquePtr<TopoDS_Edge>>;
+		fn mirror_edge(edge: &TopoDS_Edge, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<TopoDS_Edge>>;
 
-		fn make_extrude(profile_edges: &CxxVector<TopoDS_Edge>, dx: f64, dy: f64, dz: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_revolve(profile_edges: &CxxVector<TopoDS_Edge>, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_pipe_shell(all_edges: &CxxVector<TopoDS_Edge>, spine_edges: &CxxVector<TopoDS_Edge>, orient: u32, ux: f64, uy: f64, uz: f64, aux_spine_edges: &CxxVector<TopoDS_Edge>) -> UniquePtr<TopoDS_Shape>;
-		fn make_loft(all_edges: &CxxVector<TopoDS_Edge>, ruled: bool) -> UniquePtr<TopoDS_Shape>;
-		fn make_sewn_solid(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_offset(shape: &TopoDS_Shape, faces: &CxxVector<TopoDS_Face>, offset: f64, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_bspline_solid(coords: &[f64], nu: u32, nv: u32, u_periodic: bool) -> UniquePtr<TopoDS_Shape>;
+		fn make_extrude(profile_edges: &CxxVector<TopoDS_Edge>, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_revolve(profile_edges: &CxxVector<TopoDS_Edge>, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_pipe_shell(all_edges: &CxxVector<TopoDS_Edge>, spine_edges: &CxxVector<TopoDS_Edge>, orient: u32, ux: f64, uy: f64, uz: f64, aux_spine_edges: &CxxVector<TopoDS_Edge>) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_loft(all_edges: &CxxVector<TopoDS_Edge>, ruled: bool) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_sewn_solid(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_offset(shape: &TopoDS_Shape, faces: &CxxVector<TopoDS_Face>, offset: f64, tolerance: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_bspline_solid(coords: &[f64], nu: u32, nv: u32, u_periodic: bool) -> Result<UniquePtr<TopoDS_Shape>>;
 
 		fn edge_vec_new() -> UniquePtr<CxxVector<TopoDS_Edge>>;
 		fn edge_vec_push(v: Pin<&mut CxxVector<TopoDS_Edge>>, e: &TopoDS_Edge);

@@ -89,9 +89,9 @@ impl Solid {
 	/// Create a `Solid` from a `TopoDS_Shape`.
 	///
 	/// # Panics
-	/// Panics if `inner` is not `TopAbs_SOLID` (and not null).
+	/// Panics if `inner` is not `TopAbs_SOLID`.
 	pub(crate) fn new(inner: cxx::UniquePtr<ffi::TopoDS_Shape>, #[cfg(feature = "color")] colormap: std::collections::HashMap<u64, crate::common::color::Color>, history: Vec<u64>) -> Self {
-		debug_assert!(ffi::shape_is_null(&inner) || ffi::shape_is_solid(&inner), "Solid::new called with a non-SOLID shape");
+		debug_assert!(ffi::shape_is_solid(&inner), "Solid::new called with a non-SOLID shape");
 		Solid {
 			inner,
 			edges: OnceLock::new(),
@@ -231,17 +231,7 @@ impl SolidStruct for Solid {
 	// `OnceLock::new()`). See `notes/20260420-OCCTトポロジ不変性と設計含意.md`.
 
 	fn iter_edge(&self) -> impl Iterator<Item = &Edge> + '_ {
-		self.edges
-			.get_or_init(|| {
-				ffi::shape_edges(&self.inner)
-					.iter()
-					.map(|e_ref| {
-						let owned = ffi::clone_edge_handle(e_ref);
-						Edge::try_from_ffi(owned, "shape_edges: null".into()).expect("shape_edges: unexpected null (this is a bug)")
-					})
-					.collect()
-			})
-			.iter()
+		self.edges.get_or_init(|| ffi::shape_edges(&self.inner).iter().map(|e_ref| Edge { inner: ffi::clone_edge_handle(e_ref) }).collect()).iter()
 	}
 
 	fn iter_face(&self) -> impl Iterator<Item = &Face> + '_ {
@@ -256,28 +246,24 @@ impl SolidStruct for Solid {
 
 	fn extrude<'a>(profile: impl IntoIterator<Item = &'a Edge>, dir: DVec3) -> Result<Self, Error> {
 		let edges = loops_to_ffi(profile)?;
-		match ffi::make_extrude(&edges, dir.x, dir.y, dir.z) {
-			shape if shape.is_null() => Err(Error::Extrude),
-			shape => Ok(Solid::new(
-				shape,
-				#[cfg(feature = "color")]
-				std::collections::HashMap::new(),
-				Default::default(),
-			)),
-		}
+		let shape = ffi::make_extrude(&edges, dir.x, dir.y, dir.z).map_err(|e| Error::Extrude(e.what().into()))?;
+		Ok(Solid::new(
+			shape,
+			#[cfg(feature = "color")]
+			std::collections::HashMap::new(),
+			Default::default(),
+		))
 	}
 
 	fn revolve<'a>(profile: impl IntoIterator<Item = &'a Edge>, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Result<Self, Error> {
 		let edges = loops_to_ffi(profile)?;
-		match ffi::make_revolve(&edges, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle) {
-			shape if shape.is_null() => Err(Error::Revolve(format!("angle={angle} about {axis_direction:?} through {axis_origin:?} did not produce a solid"))),
-			shape => Ok(Solid::new(
-				shape,
-				#[cfg(feature = "color")]
-				std::collections::HashMap::new(),
-				Default::default(),
-			)),
-		}
+		let shape = ffi::make_revolve(&edges, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle).map_err(|e| Error::Revolve(format!("angle={angle} about {axis_direction:?} through {axis_origin:?}: {}", e.what())))?;
+		Ok(Solid::new(
+			shape,
+			#[cfg(feature = "color")]
+			std::collections::HashMap::new(),
+			Default::default(),
+		))
 	}
 
 	// ==================== Shell ====================
@@ -288,10 +274,7 @@ impl SolidStruct for Solid {
 			ffi::face_vec_push(face_vec.pin_mut(), &f.inner);
 		}
 		let mut history: Vec<u64> = Default::default();
-		let shape = ffi::builder_thick_solid(&self.inner, &face_vec, thickness, &mut history);
-		if shape.is_null() {
-			return Err(Error::Shell(format!("thickness={thickness} incompatible with the geometry, or self-intersecting offset ({} open face(s))", face_vec.len())));
-		}
+		let shape = ffi::builder_thick_solid(&self.inner, &face_vec, thickness, &mut history).map_err(|e| Error::Shell(format!("thickness={thickness} incompatible with the geometry, or self-intersecting offset ({} open face(s)): {}", face_vec.len(), e.what())))?;
 		#[cfg(feature = "color")]
 		let colormap = self.remap_colormap(&shape, &history);
 		Ok(Solid::new(
@@ -310,10 +293,7 @@ impl SolidStruct for Solid {
 			ffi::edge_vec_push(edge_vec.pin_mut(), &e.inner);
 		}
 		let mut history: Vec<u64> = Default::default();
-		let shape = ffi::builder_fillet(&self.inner, &edge_vec, radius, &mut history);
-		if shape.is_null() {
-			return Err(Error::Fillet(format!("radius={radius} does not fit the local geometry on {} edge(s)", edge_vec.len())));
-		}
+		let shape = ffi::builder_fillet(&self.inner, &edge_vec, radius, &mut history).map_err(|e| Error::Fillet(format!("radius={radius} does not fit the local geometry on {} edge(s): {}", edge_vec.len(), e.what())))?;
 		#[cfg(feature = "color")]
 		let colormap = self.remap_colormap(&shape, &history);
 		Ok(Solid::new(
@@ -330,10 +310,7 @@ impl SolidStruct for Solid {
 			ffi::edge_vec_push(edge_vec.pin_mut(), &e.inner);
 		}
 		let mut history: Vec<u64> = Default::default();
-		let shape = ffi::builder_chamfer(&self.inner, &edge_vec, distance, &mut history);
-		if shape.is_null() {
-			return Err(Error::Chamfer(format!("distance={distance} does not fit the local geometry on {} edge(s)", edge_vec.len())));
-		}
+		let shape = ffi::builder_chamfer(&self.inner, &edge_vec, distance, &mut history).map_err(|e| Error::Chamfer(format!("distance={distance} does not fit the local geometry on {} edge(s): {}", edge_vec.len(), e.what())))?;
 		#[cfg(feature = "color")]
 		let colormap = self.remap_colormap(&shape, &history);
 		Ok(Solid::new(
@@ -356,10 +333,7 @@ impl SolidStruct for Solid {
 			ffi::edge_vec_push(spine_vec.pin_mut(), &e.inner);
 		}
 		let (kind, ux, uy, uz, aux_vec) = encode_orient(orient);
-		let shape = ffi::make_pipe_shell(&profile_vec, &spine_vec, kind, ux, uy, uz, &aux_vec);
-		if shape.is_null() {
-			return Err(Error::Sweep(format!("profile ({} edge(s)) could not be swept along the spine ({} edge(s))", profile_vec.len(), spine_vec.len())));
-		}
+		let shape = ffi::make_pipe_shell(&profile_vec, &spine_vec, kind, ux, uy, uz, &aux_vec).map_err(|e| Error::Sweep(format!("profile ({} edge(s)) could not be swept along the spine ({} edge(s)): {}", profile_vec.len(), spine_vec.len(), e.what())))?;
 		Ok(Solid::new(
 			shape,
 			#[cfg(feature = "color")]
@@ -398,14 +372,7 @@ impl SolidStruct for Solid {
 			return Err(Error::Loft(format!("loft: need ≥2 sections, got {} (a single section has no thickness to skin across)", section_count)));
 		}
 
-		let shape = ffi::make_loft(&all_edges, ruled);
-		if shape.is_null() {
-			return Err(Error::Loft(format!(
-				"loft: OCCT BRepOffsetAPI_ThruSections failed (sections={}, ruled={}). \
-				 Check that each section forms a valid closed wire and sections are not coplanar.",
-				section_count, ruled
-			)));
-		}
+		let shape = ffi::make_loft(&all_edges, ruled).map_err(|e| Error::Loft(format!("loft: OCCT BRepOffsetAPI_ThruSections failed (sections={section_count}, ruled={ruled}): {}", e.what())))?;
 		Ok(Solid::new(
 			shape,
 			#[cfg(feature = "color")]
@@ -429,14 +396,7 @@ impl SolidStruct for Solid {
 		if count == 0 {
 			return Err(Error::Sew("sew: no faces given (need a face set forming one closed shell)".into()));
 		}
-		let shape = ffi::make_sewn_solid(&face_vec, tolerance);
-		if shape.is_null() {
-			return Err(Error::Sew(format!(
-				"sew: {} faces do not form exactly one closed shell within tolerance {} \
-				 (gaps, overlaps, multiple shells, or stray faces)",
-				count, tolerance
-			)));
-		}
+		let shape = ffi::make_sewn_solid(&face_vec, tolerance).map_err(|e| Error::Sew(format!("sew: {count} faces do not form exactly one closed shell within tolerance {tolerance}: {}", e.what())))?;
 		Ok(Solid::new(
 			shape,
 			#[cfg(feature = "color")]
@@ -452,14 +412,7 @@ impl SolidStruct for Solid {
 		for f in faces {
 			ffi::face_vec_push(face_vec.pin_mut(), &f.inner);
 		}
-		let shape = ffi::make_offset(&self.inner, &face_vec, offset, tolerance);
-		if shape.is_null() {
-			return Err(Error::Offset(format!(
-				"offset: OCCT BRepOffset_MakeOffset failed (offset={}, tolerance={}). \
-				 Thin walls/slots whose local thickness is ≤ 2|offset| self-intersect and are rejected.",
-				offset, tolerance
-			)));
-		}
+		let shape = ffi::make_offset(&self.inner, &face_vec, offset, tolerance).map_err(|e| Error::Offset(format!("offset: OCCT BRepOffset_MakeOffset failed (offset={offset}, tolerance={tolerance}): {}", e.what())))?;
 		Ok(Solid::new(
 			shape,
 			#[cfg(feature = "color")]
@@ -485,10 +438,7 @@ impl SolidStruct for Solid {
 			}
 		}
 
-		let shape = ffi::make_bspline_solid(&coords, u as u32, v as u32, u_periodic);
-		if shape.is_null() {
-			return Err(Error::Bspline(format!("OCCT construction failed (u={}, v={}, u_periodic={})", u, v, u_periodic)));
-		}
+		let shape = ffi::make_bspline_solid(&coords, u as u32, v as u32, u_periodic).map_err(|e| Error::Bspline(format!("OCCT construction failed (u={u}, v={v}, u_periodic={u_periodic}): {}", e.what())))?;
 		Ok(Solid::new(
 			shape,
 			#[cfg(feature = "color")]
@@ -501,10 +451,7 @@ impl SolidStruct for Solid {
 
 	fn clean(&self) -> Result<Self, Error> {
 		let mut history: Vec<u64> = Default::default();
-		let inner = ffi::builder_clean(&self.inner, &mut history);
-		if inner.is_null() {
-			return Err(Error::Clean);
-		}
+		let inner = ffi::builder_clean(&self.inner, &mut history).map_err(|e| Error::Clean(e.what().into()))?;
 		#[cfg(feature = "color")]
 		let colormap = self.remap_colormap(&inner, &history);
 		Ok(Solid::new(
@@ -551,10 +498,7 @@ impl SolidStruct for Solid {
 			ffi::shape_vec_push(solid_vec.pin_mut(), s.inner());
 		}
 		let mut history: Vec<u64> = Default::default();
-		let inner = ffi::builder_cells(&solid_vec, clauses, &mut history);
-		if inner.is_null() {
-			return Err(Error::Boolean);
-		}
+		let inner = ffi::builder_cells(&solid_vec, clauses, &mut history).map_err(|e| Error::Boolean(e.what().into()))?;
 
 		#[cfg(feature = "color")]
 		let colormap = {
@@ -693,7 +637,7 @@ impl Transform for Solid {
 	}
 
 	fn rotate(self, axis_origin: DVec3, axis_direction: DVec3, angle: f64) -> Self {
-		let inner = ffi::transform_rotate(&self.inner, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle);
+		let inner = ffi::transform_rotate(&self.inner, axis_origin.x, axis_origin.y, axis_origin.z, axis_direction.x, axis_direction.y, axis_direction.z, angle).unwrap_or_else(|e| panic!("Solid::rotate: {}", e.what()));
 		Solid::new(
 			inner,
 			#[cfg(feature = "color")]
@@ -713,7 +657,7 @@ impl Transform for Solid {
 	//      BRepBuilderAPI_Transform.cxx:48-49 (myUseModif branch)
 
 	fn scale(self, center: DVec3, factor: f64) -> Self {
-		let inner = ffi::transform_scale(&self.inner, center.x, center.y, center.z, factor);
+		let inner = ffi::transform_scale(&self.inner, center.x, center.y, center.z, factor).unwrap_or_else(|e| panic!("Solid::scale: {}", e.what()));
 		#[cfg(feature = "color")]
 		let colormap = remap_colormap_by_order(&self.inner, &inner, &self.colormap);
 		// scale/mirror rebuild topology via BRepBuilderAPI_Transform → post_ids
@@ -728,7 +672,7 @@ impl Transform for Solid {
 	}
 
 	fn mirror(self, plane_origin: DVec3, plane_normal: DVec3) -> Self {
-		let inner = ffi::transform_mirror(&self.inner, plane_origin.x, plane_origin.y, plane_origin.z, plane_normal.x, plane_normal.y, plane_normal.z);
+		let inner = ffi::transform_mirror(&self.inner, plane_origin.x, plane_origin.y, plane_origin.z, plane_normal.x, plane_normal.y, plane_normal.z).unwrap_or_else(|e| panic!("Solid::mirror: {}", e.what()));
 		#[cfg(feature = "color")]
 		let colormap = remap_colormap_by_order(&self.inner, &inner, &self.colormap);
 		Solid::new(
