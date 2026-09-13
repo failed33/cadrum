@@ -354,16 +354,36 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	where
 		Self: 'a,
 	{
-		let mut edges = edges.into_iter();
-		let Some(first) = edges.next() else { return false };
-		let mut end = first.end_point();
+		let mut edges = edges.into_iter().peekable();
+		let Some(start) = edges.peek().map(|first| first.start_point()) else { return false };
+		let tolerance = Self::precision_distance();
+		edges.try_fold(start, |end, edge| (end.distance(edge.start_point()) <= tolerance).then(|| edge.end_point())).is_some_and(|end| end.distance(start) <= tolerance)
+	}
+
+	/// Split `edges` into consecutive closed loops. A profile with holes is the
+	/// loops concatenated — `[outer, hole].concat()`. Input order is kept; which
+	/// loop bounds the material is left to the consumer, e.g. `Solid::extrude`.
+	///
+	/// Edge direction must run head-to-tail, as in [`is_loop`](EdgeStruct::is_loop).
+	/// Fails with [`Error::Edge`] on an edge that does not meet the previous one,
+	/// or on trailing edges that never close.
+	fn loops<'a>(edges: impl IntoIterator<Item = &'a Self>) -> Result<Vec<Vec<&'a Self>>, Error>
+	where
+		Self: 'a,
+	{
+		let tolerance = Self::precision_distance();
+		let (mut out, mut group) = (Vec::new(), Vec::<&'a Self>::new());
 		for edge in edges {
-			match end.distance(edge.start_point()) <= Self::precision_distance() {
-				true => end = edge.end_point(),
-				false => return false,
+			let gap = group.last().map_or(0.0, |previous| previous.end_point().distance(edge.start_point()));
+			if gap > tolerance {
+				return Err(Error::Edge(format!("loops: edge starting at {:?} is {gap} away from the previous edge's end", edge.start_point())));
+			}
+			group.push(edge);
+			if edge.end_point().distance(group[0].start_point()) <= tolerance {
+				out.push(std::mem::take(&mut group));
 			}
 		}
-		end.distance(first.start_point()) <= Self::precision_distance()
+		group.is_empty().then_some(out).ok_or_else(|| Error::Edge(format!("loops: {} trailing edges do not close a loop", group.len())))
 	}
 
 	/// Construct a single helical edge on a cylindrical surface centered at
