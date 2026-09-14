@@ -370,6 +370,13 @@ pub struct Applied {
 	pub ends: Option<[Shape; 2]>,
 }
 
+/// A shape taken as it is: no row ran, so it has no history and no ends.
+impl From<Shape> for Applied {
+	fn from(shape: Shape) -> Self {
+		Applied { shape, history: Vec::new(), ends: None }
+	}
+}
+
 /// The wire form of one row: its code and the three argument slices
 /// `apply_algorithm` reads by position.
 struct Call {
