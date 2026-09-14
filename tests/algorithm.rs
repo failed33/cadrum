@@ -83,6 +83,19 @@ fn an_open_shell_offsets_outward_and_stays_a_shell() {
 }
 
 #[test]
+fn an_offset_box_maps_every_face_onto_its_source() {
+	let block = cube();
+	let applied = apply(Algorithm::OffsetShape { shape: block.as_shape(), offset: 1.0, tolerance: TOLERANCE, join: JoinType::Intersection, intersection: true }).expect("offset");
+	let faces: std::collections::HashSet<u64> = block.iter_face().map(Face::id).collect();
+	let imaged: std::collections::HashSet<u64> = applied.history.iter().filter(|[_, source]| faces.contains(source)).map(|[image, _]| *image).collect();
+	for face in applied.shape.iter_face() {
+		assert!(imaged.contains(&face.id()), "offset face {} descends from no face of the box", face.id());
+	}
+	let sources: std::collections::HashSet<u64> = applied.history.iter().map(|[_, source]| *source).collect();
+	assert!(faces.iter().all(|face| sources.contains(face)), "every face of the box has an offset image");
+}
+
+#[test]
 fn filling_a_closed_loop_yields_one_face() {
 	let circle = Edge::circle(3.0, DVec3::Z).expect("circle");
 	let disc = shape(apply(Algorithm::Filling { boundary: &[&circle], filling: Filling { continuity: Continuity::C0, ..Filling::default() } }));

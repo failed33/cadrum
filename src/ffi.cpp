@@ -1304,6 +1304,26 @@ void ends_of(Builder& builder, std::vector<TopoDS_Shape>& ends) {
     }
 }
 
+// The offset builders publish an offset face's image through `Generated` and
+// reserve `Modified` for the closing-face case, so neither map alone carries
+// their correspondence. This adapter presents their union where the relay
+// reads `Modified`, leaving an untouched input its own descendant.
+template <class Builder>
+struct OffsetImages {
+    Builder& builder;
+    NCollection_List<TopoDS_Shape> images;
+    bool IsDone() const { return builder.IsDone(); }
+    const TopoDS_Shape& Shape() { return builder.Shape(); }
+    bool IsDeleted(const TopoDS_Shape& shape) { return builder.IsDeleted(shape); }
+    const NCollection_List<TopoDS_Shape>& Modified(const TopoDS_Shape& shape) {
+        images.Clear();
+        for (NCollection_List<TopoDS_Shape>::Iterator kept(builder.Modified(shape)); kept.More(); kept.Next()) images.Append(kept.Value());
+        if (images.IsEmpty()) images.Append(shape);
+        for (NCollection_List<TopoDS_Shape>::Iterator made(builder.Generated(shape)); made.More(); made.Next()) images.Append(made.Value());
+        return images;
+    }
+};
+
 // What every row returns: the built shape, checked, with the history of every
 // input read through the builder.
 template <class Builder>
@@ -1426,7 +1446,8 @@ Product row(Row row, const Call& call) {
         case ROW_OFFSET_SHAPE: {
             BRepOffsetAPI_MakeOffsetShape builder;
             builder.PerformByJoin(call.shape(0), call.scalar(0), call.scalar(1), BRepOffset_Skin, call.integer(1) != 0, false, join_type(static_cast<uint32_t>(call.integer(0)), "offset"), false);
-            return done(builder, call);
+            OffsetImages<BRepOffsetAPI_MakeOffsetShape> images{builder, {}};
+            return done(images, call);
         }
         case ROW_OFFSET_FACES: {
             BRepOffset_MakeOffset builder;
@@ -1438,7 +1459,9 @@ Product row(Row row, const Call& call) {
         case ROW_THICK_SOLID: {
             BRepOffsetAPI_MakeThickSolid builder;
             builder.MakeThickSolidByJoin(call.shape(0), call.list(1, call.shapes.size()), call.scalar(0), call.scalar(1), BRepOffset_Skin, false, false, join_type(static_cast<uint32_t>(call.integer(0)), "thicken"));
-            Product product = built(builder, call);
+            builder.Build();
+            OffsetImages<BRepOffsetAPI_MakeThickSolid> images{builder, {}};
+            Product product = done(images, call);
             // The builder does not flag the removed faces as deleted; nothing in
             // the result descends from them.
             for (size_t face = 1; face < call.shapes.size(); ++face) {
