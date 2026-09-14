@@ -150,7 +150,16 @@ namespace cadrum {
 // the POSIX sources `build.rs` body-stubs, so in the linked library
 // `OSD::SetSignal` is a bare `ret` and installs nothing. The translation is
 // therefore installed here, throwing the same exception types OCCT's own
-// handler throws, so the existing catch blocks keep their meaning.
+// handler throws, so a catch block below sees the failure it already expects.
+//
+// Its reach is bounded, and the bound is not a detail: throwing out of a signal
+// frame is undefined in C++ and arrives at a catch only where every frame
+// between the faulting instruction and that catch is unwindable and not
+// `noexcept`. A fault inside a `noexcept` member of the standard library (a
+// destructor, `vector::operator[]`) or inside an assembly leaf carrying no
+// unwind information still terminates the process. What is covered is a fault
+// OCCT raises from its own algorithm frames, not every fault reachable from a
+// binding below.
 //
 // Dispositions set by `sigaction` are process-wide and shared by every thread,
 // so one installation covers callers that evaluate off the main thread; the
@@ -169,10 +178,19 @@ extern "C" void raise_signal_as_failure(int signal_number, siginfo_t*, void*) {
     sigaddset(&raised, signal_number);
     pthread_sigmask(SIG_UNBLOCK, &raised, nullptr);
 
-    if (signal_number == SIGFPE) {
-        throw Standard_NumericError("SIGFPE raised inside an OCCT algorithm");
+    // The message names the signal actually caught: a bus error and a
+    // segmentation fault are different faults, and a report that renames one
+    // as the other sends the reader after the wrong cause.
+    switch (signal_number) {
+        case SIGFPE:
+            throw Standard_NumericError("SIGFPE raised inside an OCCT algorithm");
+        case SIGBUS:
+            throw OSD_Exception_ACCESS_VIOLATION("SIGBUS raised inside an OCCT algorithm");
+        case SIGSEGV:
+            throw OSD_Exception_ACCESS_VIOLATION("SIGSEGV raised inside an OCCT algorithm");
+        default:
+            throw OSD_Exception_ACCESS_VIOLATION("a fault signal raised inside an OCCT algorithm");
     }
-    throw OSD_Exception_ACCESS_VIOLATION("SIGSEGV raised inside an OCCT algorithm");
 }
 
 void install_signal_translation() {
