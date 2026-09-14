@@ -114,7 +114,17 @@
 #endif
 #include <Message.hxx>
 
+// --- Signal translation ---
+#include <OSD.hxx>
+#include <OSD_Exception_ACCESS_VIOLATION.hxx>
+#include <Standard_NumericError.hxx>
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <pthread.h>
+#endif
+
 // --- C++ standard library ---
+#include <mutex>
 #include <istream>
 #include <ostream>
 #include <sstream>
@@ -128,6 +138,75 @@
 #include <array>
 
 namespace cadrum {
+
+// ==================== Signal-to-exception translation ====================
+//
+// OCCT algorithms fault on degenerate input (`BRepOffsetAPI_MakeOffsetShape`
+// at wall thickness ≥ half the body extent, `BRepOffsetAPI_MakeFilling` over a
+// boundary enclosing no area) instead of raising `Standard_Failure`, so every
+// `catch (const Standard_Failure&)` below is unreachable and the process
+// aborts. OCCT's own remedy is `OSD::SetSignal`, which translates the C signal
+// into a `Standard_Failure`-derived exception — but `OSD_signal.cxx` is one of
+// the POSIX sources `build.rs` body-stubs, so in the linked library
+// `OSD::SetSignal` is a bare `ret` and installs nothing. The translation is
+// therefore installed here, throwing the same exception types OCCT's own
+// handler throws, so the existing catch blocks keep their meaning.
+//
+// Dispositions set by `sigaction` are process-wide and shared by every thread,
+// so one installation covers callers that evaluate off the main thread; the
+// per-thread part of OCCT's setup (`OSD::SetThreadLocalSignal`) only arms
+// floating-point traps, which stay disarmed here as `OSD::SetSignal(false)`
+// leaves them.
+namespace {
+
+#if defined(__unix__) || defined(__APPLE__)
+
+extern "C" void raise_signal_as_failure(int signal_number, siginfo_t*, void*) {
+    // The signal is blocked for the duration of its own handler, and throwing
+    // out of the handler skips the `sigreturn` that would restore the mask.
+    sigset_t raised;
+    sigemptyset(&raised);
+    sigaddset(&raised, signal_number);
+    pthread_sigmask(SIG_UNBLOCK, &raised, nullptr);
+
+    if (signal_number == SIGFPE) {
+        throw Standard_NumericError("SIGFPE raised inside an OCCT algorithm");
+    }
+    throw OSD_Exception_ACCESS_VIOLATION("SIGSEGV raised inside an OCCT algorithm");
+}
+
+void install_signal_translation() {
+    struct sigaction action = {};
+    action.sa_sigaction = raise_signal_as_failure;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    for (int signal_number : {SIGSEGV, SIGBUS, SIGFPE}) {
+        sigaction(signal_number, &action, nullptr);
+    }
+}
+
+#else
+
+// Windows and wasm have no POSIX disposition to set. `OSD::SetSignal` is the
+// call OCCT intends for them, and takes effect the moment `build.rs` stops
+// stubbing `OSD_signal.cxx`; until then those targets still abort on a fault.
+void install_signal_translation() {
+    OSD::SetSignal(false);
+}
+
+#endif
+
+std::once_flag signal_translation_once;
+
+/// Runs during load-time initialisation of this translation unit, before any
+/// binding can be called; `std::call_once` keeps it single even if a host
+/// loads the binding from several threads.
+const bool signal_translation_installed = [] {
+    std::call_once(signal_translation_once, install_signal_translation);
+    return true;
+}();
+
+}  // namespace
 
 bool shape_is_valid(const TopoDS_Shape& shape) {
     try {

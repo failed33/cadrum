@@ -133,3 +133,16 @@ fn test_shell_09_mesh_attaches_a_face_to_every_triangle() {
 	let faces: Vec<u64> = shell.iter_face().map(Face::id).collect();
 	assert!(mesh.face_ids.iter().all(|id| faces.contains(id)), "a triangle referenced a face outside the shell");
 }
+
+#[test]
+fn test_shell_10_fill_rejects_a_boundary_enclosing_no_area() {
+	let far = DVec3::new(SIDE, 0.0, 0.0);
+	let there = Edge::line(DVec3::ZERO, far).expect("line");
+	let back = Edge::line(far, DVec3::ZERO).expect("line");
+
+	// A loop that doubles back on itself bounds no surface. OCCT's filling
+	// faults on it instead of raising, so without the binding's
+	// signal-to-exception translation this call aborts the process.
+	let error = Shell::fill([&there, &back], Filling { continuity: Continuity::C0, ..Filling::default() }).expect_err("a boundary enclosing no area must be refused");
+	assert!(matches!(error, Error::Surface(_)), "expected Error::Surface, got {error:?}");
+}

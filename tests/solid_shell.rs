@@ -48,3 +48,14 @@ fn test_shell_empty_open_faces_outward_seals_cavity() {
 	let expected = 300.0 + 7.5 * std::f64::consts::PI + std::f64::consts::PI / 6.0;
 	assert!((sealed.volume() - expected).abs() < 1e-3, "outward empty shell volume ≈ {expected:.3}, got {}", sealed.volume());
 }
+
+#[test]
+fn test_shell_half_extent_thickness_is_refused() {
+	let side = 10.0;
+	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(side));
+	// Hollowing by half the extent collapses the inner shell onto itself. OCCT's
+	// offset faults on it instead of raising, so without the binding's
+	// signal-to-exception translation this call aborts the process.
+	let error = cube.shell(-side / 2.0, std::iter::empty::<&cadrum::Face>()).expect_err("a wall as thick as the half-extent must be refused");
+	assert!(matches!(error, cadrum::Error::Shell(_)), "expected Error::Shell, got {error:?}");
+}

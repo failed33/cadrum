@@ -68,3 +68,19 @@ its kind rather than asserting one, and BRep reading, compound assembly,
 decomposition and triangulation take the kind as an argument. A BRep payload
 can therefore be read as shells without the `TopAbs_SOLID` filter that
 `Solid::read_brep` keeps. `cad-kernel` tags the archive with the kind it wrote.
+
+## Signal-to-exception translation
+
+OCCT algorithms fault on some degenerate input instead of raising
+`Standard_Failure`: `BRepOffsetAPI_MakeOffsetShape` at a wall thickness of half
+the body extent, `BRepOffsetAPI_MakeFilling` over a boundary enclosing no area.
+OCCT's remedy is `OSD::SetSignal`, but `build.rs` body-stubs `OSD_signal.cxx`
+for every target, so in the linked library that call is a bare `ret`. The
+binding therefore installs the translation itself on POSIX targets: one
+`sigaction` for `SIGSEGV`, `SIGBUS` and `SIGFPE` whose handler throws the same
+OCCT exception types OCCT's own handler throws, so the existing
+`catch (const Standard_Failure&)` blocks turn the fault into an `Error`.
+Dispositions are process-wide, so the one installation covers callers that run
+algorithms off the main thread; floating-point traps stay disarmed, as they are
+under `OSD::SetSignal(false)`. Windows and wasm keep calling `OSD::SetSignal`
+and still abort on a fault until the stub is lifted.
