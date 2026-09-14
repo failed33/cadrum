@@ -43,22 +43,6 @@ mod ffi_bridge {
 
 		// ==================== Shape Constructors ====================
 
-		fn make_half_space(ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn make_box_checked(x: f64, y: f64, z: f64) -> Result<UniquePtr<TopoDS_Shape>>;
-		fn make_sphere_checked(radius: f64) -> Result<UniquePtr<TopoDS_Shape>>;
-		fn make_cylinder_checked(radius: f64, height: f64) -> Result<UniquePtr<TopoDS_Shape>>;
-
-		fn make_box(x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn make_cylinder(px: f64, py: f64, pz: f64, dx: f64, dy: f64, dz: f64, radius: f64, height: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn make_sphere(cx: f64, cy: f64, cz: f64, radius: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn make_cone(px: f64, py: f64, pz: f64, dx: f64, dy: f64, dz: f64, r1: f64, r2: f64, height: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn make_torus(px: f64, py: f64, pz: f64, dx: f64, dy: f64, dz: f64, r1: f64, r2: f64) -> UniquePtr<TopoDS_Shape>;
-
 		fn make_empty() -> UniquePtr<TopoDS_Shape>;
 
 		fn deep_copy(shape: &TopoDS_Shape) -> UniquePtr<TopoDS_Shape>;
@@ -71,43 +55,19 @@ mod ffi_bridge {
 		#[cfg(feature = "color")]
 		fn write_step_color_stream(shape: &TopoDS_Shape, ids: &[u64], rgb: &[f32], writer: &mut RustWriter) -> bool;
 
-		// ==================== Builders (solid → solid with history) ====================
-
-		// Evaluate any boolean expression on N solids via BOPAlgo_CellsBuilder.
-		// `clauses` は DIMACS-flat DNF (`+i` = solids[i-1] を take、`-i` = avoid、`0` = clause 終端)。
-		// `out_history` の形式は builder_boolean と同じ。
-		fn builder_cells(solids: &CxxVector<TopoDS_Shape>, clauses: &[i64], out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-
-		// Unify shared faces. `out_history` receives flat [new_id, old_id, ...]
-		// pairs (same layout as `builder_boolean`), used by Solid::clean to populate
-		// `Solid::history` and remap the colormap when color is enabled.
-		fn builder_clean(shape: &TopoDS_Shape, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-
-		// shell/fillet/chamfer fill `out_history` with flat [post_id, src_id]
-		// pairs (same layout as builder_cells) → Solid::history + colormap remap.
-		fn builder_thick_solid(solid: &TopoDS_Shape, open_faces: &CxxVector<TopoDS_Face>, thickness: f64, tolerance: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-		fn builder_fillet(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, radius: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-		fn builder_chamfer(solid: &TopoDS_Shape, edges: &CxxVector<TopoDS_Edge>, distance: f64, out_history: &mut Vec<u64>) -> UniquePtr<TopoDS_Shape>;
-
-		// ==================== Transforms (solid → solid, no history) ====================
-
-		fn transform_affine(shape: &TopoDS_Shape, matrix: &[f64], edge_history: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
+		// ==================== Placements (a moved handle, no rebuild) ====================
 
 		fn transform_translate(shape: &TopoDS_Shape, tx: f64, ty: f64, tz: f64) -> UniquePtr<TopoDS_Shape>;
 
 		fn transform_rotate(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, angle: f64) -> UniquePtr<TopoDS_Shape>;
 
-		fn transform_scale(shape: &TopoDS_Shape, cx: f64, cy: f64, cz: f64, factor: f64) -> UniquePtr<TopoDS_Shape>;
-
-		fn transform_mirror(shape: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> UniquePtr<TopoDS_Shape>;
-
 		// ==================== Shape Queries ====================
 
 		fn shape_is_null(shape: &TopoDS_Shape) -> bool;
+		fn shape_is_closed(shape: &TopoDS_Shape) -> bool;
 		// Codes mirrored by `occt::shape::ShapeKind`; see ffi.h.
 		fn shape_kind(shape: &TopoDS_Shape) -> u32;
 		fn shape_is_valid(shape: &TopoDS_Shape) -> Result<bool>;
-		fn sweep_law(profile: &CxxVector<TopoDS_Edge>, spine: &CxxVector<TopoDS_Edge>, stations: &[f64], scales: &[f64], tolerance: f64, start_edges: &mut Vec<u64>, end_edges: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 		fn shape_volume(shape: &TopoDS_Shape) -> f64;
 		fn shape_surface_area(shape: &TopoDS_Shape) -> f64;
 		fn shape_center_of_mass(shape: &TopoDS_Shape, x: &mut f64, y: &mut f64, z: &mut f64);
@@ -165,30 +125,18 @@ mod ffi_bridge {
 		fn scale_edge(edge: &TopoDS_Edge, cx: f64, cy: f64, cz: f64, factor: f64) -> UniquePtr<TopoDS_Edge>;
 		fn mirror_edge(edge: &TopoDS_Edge, ox: f64, oy: f64, oz: f64, nx: f64, ny: f64, nz: f64) -> UniquePtr<TopoDS_Edge>;
 
-		fn make_extrude(profile_edges: &CxxVector<TopoDS_Edge>, dx: f64, dy: f64, dz: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_pipe_shell(all_edges: &CxxVector<TopoDS_Edge>, spine_edges: &CxxVector<TopoDS_Edge>, orient: u32, ux: f64, uy: f64, uz: f64, aux_spine_edges: &CxxVector<TopoDS_Edge>) -> UniquePtr<TopoDS_Shape>;
-		fn make_loft(all_edges: &CxxVector<TopoDS_Edge>, ruled: bool, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_sewn_solid(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
-		fn make_offset(shape: &TopoDS_Shape, faces: &CxxVector<TopoDS_Face>, offset: f64, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
-
-		// Open-shell (surface) entry points. Every one reports failure as a
-		// C++ exception, surfaced here as `cxx::Exception`, never as a null shape.
-		fn make_sewn_shell(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> Result<UniquePtr<TopoDS_Shape>>;
-		fn make_offset_shell(shell: &TopoDS_Shape, offset: f64, tolerance: f64, join: u32) -> Result<UniquePtr<TopoDS_Shape>>;
-		#[allow(clippy::too_many_arguments)]
-		fn make_filled_shell(boundary: &CxxVector<TopoDS_Edge>, continuity: u32, degree: u32, points_on_curve: u32, iterations: u32, max_degree: u32, max_segments: u32, tolerance_2d: f64, tolerance_3d: f64, tolerance_angular: f64, tolerance_curvature: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		// Free boundary loops of a shape; failure is a `cxx::Exception`.
 		fn free_boundary_edges(shape: &TopoDS_Shape, split_closed: bool, split_open: bool, out_loop_sizes: &mut Vec<u32>) -> Result<UniquePtr<CxxVector<TopoDS_Edge>>>;
 		fn make_bspline_solid(coords: &[f64], nu: u32, nv: u32, u_periodic: bool) -> UniquePtr<TopoDS_Shape>;
 
-		fn edge_vec_new() -> UniquePtr<CxxVector<TopoDS_Edge>>;
-		fn edge_vec_push(v: Pin<&mut CxxVector<TopoDS_Edge>>, e: &TopoDS_Edge);
-		fn edge_vec_push_null(v: Pin<&mut CxxVector<TopoDS_Edge>>);
-
-		fn face_vec_new() -> UniquePtr<CxxVector<TopoDS_Face>>;
-		fn face_vec_push(v: Pin<&mut CxxVector<TopoDS_Face>>, f: &TopoDS_Face);
-
 		fn shape_vec_new() -> UniquePtr<CxxVector<TopoDS_Shape>>;
 		fn shape_vec_push(v: Pin<&mut CxxVector<TopoDS_Shape>>, s: &TopoDS_Shape);
+		fn shape_vec_push_edge(v: Pin<&mut CxxVector<TopoDS_Shape>>, e: &TopoDS_Edge);
+		fn shape_vec_push_face(v: Pin<&mut CxxVector<TopoDS_Shape>>, f: &TopoDS_Face);
+
+		// ==================== The algorithm table ====================
+		// See `occt::algorithm`. Failure is a `cxx::Exception` naming the row.
+		fn apply_algorithm(algorithm: u32, shapes: &CxxVector<TopoDS_Shape>, scalars: &[f64], integers: &[i64], out_history: &mut Vec<u64>, out_ends: Pin<&mut CxxVector<TopoDS_Shape>>) -> Result<UniquePtr<TopoDS_Shape>>;
 
 	}
 }

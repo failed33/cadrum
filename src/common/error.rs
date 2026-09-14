@@ -7,6 +7,10 @@ pub enum Error {
 	/// Read/Writel step brep gltf etc
 	Io(std::io::Error),
 
+	/// A row of the algorithm table failed; the message names the row and
+	/// carries OCCT's reason.
+	Algorithm(String),
+
 	/// Triangulation/meshing failed.
 	Tesselation,
 
@@ -43,10 +47,6 @@ pub enum Error {
 	/// Sewing (`Solid::sew`) failed: the faces do not form exactly one closed shell within the tolerance.
 	Sew(String),
 
-	/// An open-surface operation (`Shell::fill`, `Shell::free_boundaries`) failed:
-	/// the filling could not meet its constraints, or the shape could not be analysed.
-	Surface(String),
-
 	/// Surface offset (`Solid::offset`) failed: the offset surfaces self-intersect.
 	Offset(String),
 
@@ -59,6 +59,7 @@ impl std::fmt::Display for Error {
 		match self {
 			Error::Validation(msg) => write!(f, "Validation failed: {msg}"),
 			Error::Io(e) => write!(f, "IO failed: {e}"),
+			Error::Algorithm(msg) => write!(f, "Algorithm failed: {msg}"),
 			Error::Tesselation => write!(f, "Tesselation failed"),
 			Error::Boolean => write!(f, "Boolean operation failed"),
 			Error::NotOne(n) => write!(f, "Expected exactly one resulting Solid, got {n}"),
@@ -71,7 +72,6 @@ impl std::fmt::Display for Error {
 			Error::Chamfer(msg) => write!(f, "Chamfer failed: {msg}"),
 			Error::Loft(msg) => write!(f, "Loft failed: {msg}"),
 			Error::Sew(msg) => write!(f, "Sew failed: {msg}"),
-			Error::Surface(msg) => write!(f, "Surface failed: {msg}"),
 			Error::Offset(msg) => write!(f, "Offset failed: {msg}"),
 			Error::Bspline(msg) => write!(f, "Bspline failed: {msg}"),
 		}

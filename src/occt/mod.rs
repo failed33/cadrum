@@ -1,3 +1,4 @@
+pub mod algorithm;
 mod compound;
 pub mod edge;
 pub mod face;
@@ -7,5 +8,4 @@ pub mod face;
 mod ffi;
 pub mod io;
 pub mod shape;
-pub mod shell;
 pub mod solid;

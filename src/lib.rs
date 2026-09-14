@@ -11,10 +11,10 @@ pub mod occt;
 // pub mod pure;
 #[cfg(not(feature = "pure"))]
 pub use occt::{
+	algorithm::{apply, Algorithm, Applied, BooleanOperation, Continuity, Filling, Frame, JoinType, ScaleSample},
 	edge::Edge,
 	face::Face,
-	shape::ShapeKind,
-	shell::{Continuity, Filling, JoinType, Shell},
+	shape::{Shape, ShapeKind},
 	solid::Solid,
 };
 pub(crate) mod traits;

@@ -1,18 +1,19 @@
-//! I/O helpers. Exposed via `impl SolidStruct for Solid` in `super::solid`
-//! (e.g. `Solid::read_step`, `Solid::write_step`, `Solid::mesh`) and, for the
-//! `_shapes` variants, by `super::shell::Shell`. Only the colour trailer and
-//! the colormap are solid-specific; the payload, compound, triangulation and
-//! decomposition paths are shared by every shape kind.
+//! Solid I/O: the colour trailer and the colormap around the kind-generic
+//! payload, triangulation and STEP paths of [`Shape`]. Exposed via
+//! `impl SolidStruct for Solid` (`Solid::read_step`, `Solid::mesh`, ...).
 
-use super::compound::{compound_of, shapes_of_kind, CompoundShape};
+use super::compound::CompoundShape;
+#[cfg(feature = "color")]
 use super::ffi;
+#[cfg(feature = "color")]
 use super::ffi::{RustReader, RustWriter};
-use super::shape::{Shape, ShapeKind};
+use super::shape::Shape;
+#[cfg(feature = "color")]
+use super::shape::ShapeKind;
 use super::solid::Solid;
 use crate::common::error::Error;
 use crate::common::mesh::Mesh;
 use crate::traits::Tessellation;
-use glam::DVec3;
 use std::io::{Read, Write};
 
 #[cfg(feature = "color")]
@@ -55,16 +56,14 @@ fn read_color_trailer(tail: &[u8]) -> std::collections::HashMap<u32, Color> {
 /// STEP cannot index like this — `try_sew_orphan_faces` shifts every index, so it
 /// carries explicit ids instead.
 #[cfg(feature = "color")]
-fn trailer_ids(shape: &ffi::TopoDS_Shape) -> Vec<u64> {
+fn trailer_ids(shape: &Shape) -> Vec<u64> {
 	// Bound to locals: both are `UniquePtr<CxxVector<..>>` that the iterators borrow.
-	let solids = ffi::decompose_by_kind(shape, ShapeKind::Solid.code());
-	let faces = ffi::shape_faces(shape);
-	solids.iter().map(ffi::shape_tshape_id).chain(faces.iter().map(ffi::face_tshape_id)).collect()
+	shape.components(ShapeKind::Solid).iter().map(Shape::id).chain(shape.iter_face().map(|face| face.id())).collect()
 }
 
 #[cfg(feature = "color")]
 fn write_color_trailer<W: Write>(compound: &CompoundShape, writer: &mut W) -> Result<(), Error> {
-	let id_to_index: std::collections::HashMap<u64, u32> = trailer_ids(compound.inner()).into_iter().enumerate().map(|(i, id)| (id, i as u32)).collect();
+	let id_to_index: std::collections::HashMap<u64, u32> = trailer_ids(compound.shape()).into_iter().enumerate().map(|(i, id)| (id, i as u32)).collect();
 	// `CompoundShape::decompose` gives every solid a clone of the merged colormap, so
 	// a solid carries its siblings' keys too; those have no index and drop out here.
 	let mut entries: Vec<(u32, f32, f32, f32)> = compound.colormap().iter().filter_map(|(id, rgb)| id_to_index.get(id).map(|&idx| (idx, rgb.r, rgb.g, rgb.b))).collect();
@@ -102,58 +101,27 @@ pub(super) fn read_step<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
 			return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "step: reader produced no shape (invalid or corrupted input)")));
 		}
 		let colormap: std::collections::HashMap<u64, Color> = ids.into_iter().zip(rgb.chunks_exact(3)).map(|(id, c)| (id, Color { r: c[0], g: c[1], b: c[2] })).collect();
-		Ok(CompoundShape::from_raw(inner, colormap, Default::default()).decompose())
+		Ok(CompoundShape::from_shape(Shape::new(inner), colormap).decompose())
 	}
 	#[cfg(not(feature = "color"))]
 	{
-		let mut rust_reader = RustReader::from_ref(reader);
-		let inner = ffi::read_step_stream(&mut rust_reader);
-		if inner.is_null() {
-			return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "step: reader produced no shape (invalid or corrupted input)")));
-		}
-		Ok(CompoundShape::from_raw(inner, Default::default()).decompose())
+		Ok(CompoundShape::from_shape(Shape::read_step(reader)?).decompose())
 	}
-}
-
-/// The BRep payload of `reader`, plus the buffer and the payload length so a
-/// caller can look at whatever follows it. Kind-agnostic: what the payload
-/// holds is decided by the decomposition that follows, not here.
-fn read_brep_payload<R: Read>(reader: &mut R) -> Result<(cxx::UniquePtr<ffi::TopoDS_Shape>, Vec<u8>, usize), Error> {
-	// Buffered whole: `BinTools::Read` seeks backwards to resolve shared sub-shape
-	// references, so it cannot run off a sequential stream.
-	let mut buf = Vec::new();
-	reader.read_to_end(&mut buf)?;
-
-	// Payload length — where a trailer would begin. Unwritten, and unread, on null.
-	let mut consumed = 0usize;
-	let inner = ffi::read_brep_stream(&buf, &mut consumed);
-	if inner.is_null() {
-		return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "brep: reader produced no shape (invalid or corrupted input)")));
-	}
-	Ok((inner, buf, consumed))
-}
-
-/// Every shape of `kind` in a BRep payload, without the solid-only filter
-/// `read_brep` applies. The colour trailer is indexed against the solid
-/// decomposition and is therefore not read here.
-pub(super) fn read_brep_shapes<R: Read>(reader: &mut R, kind: ShapeKind) -> Result<Vec<Shape>, Error> {
-	let (inner, _, _) = read_brep_payload(reader)?;
-	Ok(shapes_of_kind(&inner, kind))
 }
 
 pub(super) fn read_brep<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
 	#[cfg_attr(not(feature = "color"), allow(unused_variables))]
-	let (inner, buf, consumed) = read_brep_payload(reader)?;
+	let (shape, buf, consumed) = Shape::read_brep_payload(reader)?;
 
 	#[cfg(feature = "color")]
 	{
-		let ids = trailer_ids(&inner);
+		let ids = trailer_ids(&shape);
 		let colormap = read_color_trailer(buf.get(consumed..).unwrap_or_default()).into_iter().filter_map(|(idx, color)| ids.get(idx as usize).map(|&id| (id, color))).collect();
-		Ok(CompoundShape::from_raw(inner, colormap, Default::default()).decompose())
+		Ok(CompoundShape::from_shape(shape, colormap).decompose())
 	}
 	#[cfg(not(feature = "color"))]
 	{
-		Ok(CompoundShape::from_raw(inner, Default::default()).decompose())
+		Ok(CompoundShape::from_shape(shape).decompose())
 	}
 }
 
@@ -173,7 +141,7 @@ pub(super) fn write_step<'a, W: Write>(solids: impl IntoIterator<Item = &'a Soli
 			rgb.extend_from_slice(&[c.r, c.g, c.b]);
 		}
 		let mut rust_writer = RustWriter::from_ref(writer);
-		if ffi::write_step_color_stream(compound.inner(), &ids, &rgb, &mut rust_writer) {
+		if ffi::write_step_color_stream(compound.shape().inner(), &ids, &rgb, &mut rust_writer) {
 			Ok(())
 		} else {
 			Err(Error::Io(std::io::Error::other("step: OCCT writer reported failure")))
@@ -181,36 +149,17 @@ pub(super) fn write_step<'a, W: Write>(solids: impl IntoIterator<Item = &'a Soli
 	}
 	#[cfg(not(feature = "color"))]
 	{
-		let mut rust_writer = RustWriter::from_ref(writer);
-		if ffi::write_step_stream(compound.inner(), &mut rust_writer) {
-			Ok(())
-		} else {
-			Err(Error::Io(std::io::Error::other("step: OCCT writer reported failure")))
-		}
+		Shape::write_step([compound.shape()], writer)
 	}
 }
 
 pub(super) fn write_brep<'a, W: Write>(solids: impl IntoIterator<Item = &'a Solid>, writer: &mut W) -> Result<(), Error> {
 	let compound = CompoundShape::new(solids);
-	// Scoped by the helper: the streambuf flushes on drop, so the payload lands
-	// before the trailer.
-	write_brep_shape(compound.inner(), writer)?;
+	// The payload lands before the trailer: the streambuf flushes on drop.
+	Shape::write_brep([compound.shape()], writer)?;
 	#[cfg(feature = "color")]
 	write_color_trailer(&compound, writer)?;
 	Ok(())
-}
-
-pub(super) fn write_brep_shapes<'a, W: Write>(shapes: impl IntoIterator<Item = &'a ffi::TopoDS_Shape>, writer: &mut W) -> Result<(), Error> {
-	write_brep_shape(&compound_of(shapes), writer)
-}
-
-fn write_brep_shape<W: Write>(shape: &ffi::TopoDS_Shape, writer: &mut W) -> Result<(), Error> {
-	let mut rust_writer = RustWriter::from_ref(writer);
-	if ffi::write_brep_stream(shape, &mut rust_writer) {
-		Ok(())
-	} else {
-		Err(Error::Io(std::io::Error::other("brep: OCCT writer reported failure")))
-	}
 }
 
 pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: Tessellation) -> Result<Mesh, Error> {
@@ -222,8 +171,8 @@ pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: Tes
 		let mut map = std::collections::HashMap::new();
 		for s in &solids {
 			if let Some(&c) = s.colormap().get(&s.id()) {
-				for f in ffi::shape_faces(s.inner()).iter() {
-					map.insert(ffi::face_tshape_id(f), c);
+				for f in s.iter_face() {
+					map.insert(f.id(), c);
 				}
 			}
 			// Face colours are the more specific style and win over the solid's.
@@ -232,7 +181,7 @@ pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: Tes
 		map
 	};
 
-	let mesh = mesh_shapes(solids.iter().map(|solid| solid.inner()), options)?;
+	let mesh = Shape::mesh(solids.iter().map(|solid| solid.as_shape()), options)?;
 
 	#[cfg(feature = "color")]
 	let mesh = {
@@ -241,47 +190,4 @@ pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: Tes
 		mesh
 	};
 	Ok(mesh)
-}
-
-/// Triangulate any shapes, whatever their kind. Colour is not a property of the
-/// triangulation: `mesh` layers a solid's colormap on top of this result.
-pub(super) fn mesh_shapes<'a>(shapes: impl IntoIterator<Item = &'a ffi::TopoDS_Shape>, options: Tessellation) -> Result<Mesh, Error> {
-	let compound = compound_of(shapes);
-	let data = ffi::mesh_shape(&compound, options.deflection_linear, options.deflection_angular, options.relative_linear).map_err(|_| Error::Tesselation)?;
-	if !data.success {
-		return Err(Error::Tesselation);
-	}
-	let vertex_count = data.vertices.len() / 3;
-	let vertices: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.vertices[i * 3], data.vertices[i * 3 + 1], data.vertices[i * 3 + 2])).collect();
-	let normals: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.normals[i * 3], data.normals[i * 3 + 1], data.normals[i * 3 + 2])).collect();
-	let indices: Vec<usize> = data.indices.iter().map(|&i| i as usize).collect();
-	let face_ids = data.face_tshape_ids;
-
-	// Topological edge polylines, NaN-separated. Reuses the existing edge
-	// discretizer (GCPnts_TangentialDeflection). `relative_linear` applies to
-	// surface triangulation only; edges use `deflection_linear` as an absolute
-	// chord here.
-	let mut edges: Vec<DVec3> = Vec::new();
-	for e in ffi::shape_edges(&compound).iter() {
-		let segs = ffi::edge_approximation_segments(e, options.deflection_linear, options.deflection_angular, options.relative_linear);
-		if segs.len() < 6 {
-			continue; // fewer than 2 points — nothing to draw
-		}
-		if !edges.is_empty() {
-			edges.push(DVec3::NAN);
-		}
-		for c in segs.chunks_exact(3) {
-			edges.push(DVec3::new(c[0], c[1], c[2]));
-		}
-	}
-
-	Ok(Mesh {
-		vertices,
-		normals,
-		indices,
-		face_ids,
-		#[cfg(feature = "color")]
-		colormap: Default::default(),
-		edges,
-	})
 }

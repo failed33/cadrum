@@ -61,6 +61,14 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepPrimAPI_MakeSweep.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <BRepAlgoAPI_Section.hxx>
+#include <BOPAlgo_Operation.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
+#include <BRepProj_Projection.hxx>
 
 // --- Boolean operations & shape cleanup ---
 #include <BOPAlgo_CellsBuilder.hxx>
@@ -136,6 +144,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <array>
+#include <cstdlib>
+#include <set>
+#include <type_traits>
+#include <utility>
 
 namespace cadrum {
 
@@ -234,53 +246,6 @@ bool shape_is_valid(const TopoDS_Shape& shape) {
     }
 }
 
-std::unique_ptr<TopoDS_Shape> sweep_law(
-    const std::vector<TopoDS_Edge>& profile,
-    const std::vector<TopoDS_Edge>& spine,
-    rust::Slice<const double> stations, rust::Slice<const double> scales,
-    double tolerance, rust::Vec<uint64_t>& start_edges, rust::Vec<uint64_t>& end_edges) {
-    if (stations.size() != scales.size() || stations.size() < 2 ||
-        stations.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-        profile.empty() || spine.empty() || !std::isfinite(tolerance) || tolerance <= 0) {
-        throw std::invalid_argument("invalid sweep law inputs");
-    }
-    try {
-        NCollection_Array1<gp_Pnt2d> values(1, static_cast<int>(stations.size()));
-        for (size_t i = 0; i < stations.size(); ++i) {
-            if (!std::isfinite(stations[i]) || !std::isfinite(scales[i]) || scales[i] <= 0 ||
-                (i > 0 && stations[i] <= stations[i - 1])) {
-                throw std::invalid_argument("sweep stations must increase and scales must be positive");
-            }
-            values.SetValue(static_cast<int>(i + 1), gp_Pnt2d(stations[i], scales[i]));
-        }
-        Handle(Law_Interpol) law = new Law_Interpol();
-        law->Set(values, false);
-        BRepBuilderAPI_MakeWire path;
-        BRepBuilderAPI_MakeWire section;
-        for (const auto& edge : spine) path.Add(edge);
-        for (const auto& edge : profile) section.Add(edge);
-        if (!path.IsDone() || !section.IsDone()) throw std::runtime_error("invalid sweep wires");
-        BRepOffsetAPI_MakePipeShell builder(path.Wire());
-        builder.SetTolerance(tolerance, tolerance, tolerance);
-        builder.SetMode(false);
-        builder.SetLaw(section.Wire(), law, false, true);
-        builder.Build();
-        if (!builder.IsDone() || !builder.MakeSolid()) throw std::runtime_error("law sweep failed");
-        const auto append_edges = [](const TopoDS_Shape& boundary, rust::Vec<uint64_t>& output) {
-            NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
-            TopExp::MapShapes(boundary, TopAbs_EDGE, edges);
-            for (int index = 1; index <= edges.Extent(); ++index) {
-                output.push_back(reinterpret_cast<uint64_t>(edges(index).TShape().get()));
-            }
-        };
-        append_edges(builder.FirstShape(), start_edges);
-        append_edges(builder.LastShape(), end_edges);
-        return std::make_unique<TopoDS_Shape>(builder.Shape());
-    } catch (const Standard_Failure& error) {
-        throw std::runtime_error(error.what());
-    }
-}
-
 // OCCT defaults to a stdout printer that emits "Statistics on Transfer" banners on STEP read/write.
 // Clear all printers at load time per the documented recommendation.
 // ******        Statistics on Transfer (Write)                 ******
@@ -290,108 +255,6 @@ static const int _silence_occt_default_printer = []() {
 }();
 
 // ==================== Shape Constructors ====================
-
-std::unique_ptr<TopoDS_Shape> make_half_space(
-    double ox, double oy, double oz,
-    double nx, double ny, double nz)
-{
-    gp_Pnt origin(ox, oy, oz);
-    gp_Dir normal(nx, ny, nz);
-    gp_Pln plane(origin, normal);
-
-    BRepBuilderAPI_MakeFace face_maker(plane);
-    TopoDS_Face face = face_maker.Face();
-
-    // Reference point is on the SAME side as the normal.
-    // BRepPrimAPI_MakeHalfSpace fills the ref_point side,
-    // so the solid occupies the half-space where the normal points.
-    double len = std::sqrt(nx*nx + ny*ny + nz*nz);
-    gp_Pnt ref_point(ox + nx/len, oy + ny/len, oz + nz/len);
-
-    BRepPrimAPI_MakeHalfSpace maker(face, ref_point);
-    return std::make_unique<TopoDS_Shape>(maker.Solid());
-}
-
-std::unique_ptr<TopoDS_Shape> make_box(
-    double x1, double y1, double z1,
-    double x2, double y2, double z2)
-{
-    double minx = std::min(x1, x2);
-    double miny = std::min(y1, y2);
-    double minz = std::min(z1, z2);
-    double maxx = std::max(x1, x2);
-    double maxy = std::max(y1, y2);
-    double maxz = std::max(z1, z2);
-
-    gp_Pnt p_min(minx, miny, minz);
-    double dx = maxx - minx;
-    double dy = maxy - miny;
-    double dz = maxz - minz;
-
-    BRepPrimAPI_MakeBox maker(p_min, dx, dy, dz);
-    return std::make_unique<TopoDS_Shape>(maker.Shape());
-}
-
-std::unique_ptr<TopoDS_Shape> make_cylinder(
-    double px, double py, double pz,
-    double dx, double dy, double dz,
-    double radius, double height)
-{
-    gp_Pnt center(px, py, pz);
-    gp_Dir direction(dx, dy, dz);
-    gp_Ax2 axis(center, direction);
-
-    BRepPrimAPI_MakeCylinder maker(axis, radius, height);
-    return std::make_unique<TopoDS_Shape>(maker.Shape());
-}
-
-std::unique_ptr<TopoDS_Shape> make_sphere(
-    double cx, double cy, double cz,
-    double radius)
-{
-    gp_Pnt center(cx, cy, cz);
-    BRepPrimAPI_MakeSphere maker(center, radius);
-    return std::make_unique<TopoDS_Shape>(maker.Shape());
-}
-
-template <typename Make>
-static std::unique_ptr<TopoDS_Shape> checked_primitive(Make&& make) {
-    try { return make(); }
-    catch (const Standard_Failure& error) { throw std::runtime_error(error.what()); }
-}
-std::unique_ptr<TopoDS_Shape> make_box_checked(double x, double y, double z) {
-    return checked_primitive([=] { return make_box(-x/2, -y/2, -z/2, x/2, y/2, z/2); });
-}
-std::unique_ptr<TopoDS_Shape> make_sphere_checked(double radius) {
-    return checked_primitive([=] { return make_sphere(0, 0, 0, radius); });
-}
-std::unique_ptr<TopoDS_Shape> make_cylinder_checked(double radius, double height) {
-    return checked_primitive([=] { return make_cylinder(0, 0, -height/2, 0, 0, 1, radius, height); });
-}
-
-std::unique_ptr<TopoDS_Shape> make_cone(
-    double px, double py, double pz,
-    double dx, double dy, double dz,
-    double r1, double r2, double height)
-{
-    gp_Pnt center(px, py, pz);
-    gp_Dir direction(dx, dy, dz);
-    gp_Ax2 axis(center, direction);
-    BRepPrimAPI_MakeCone maker(axis, r1, r2, height);
-    return std::make_unique<TopoDS_Shape>(maker.Shape());
-}
-
-std::unique_ptr<TopoDS_Shape> make_torus(
-    double px, double py, double pz,
-    double dx, double dy, double dz,
-    double r1, double r2)
-{
-    gp_Pnt center(px, py, pz);
-    gp_Dir direction(dx, dy, dz);
-    gp_Ax2 axis(center, direction);
-    BRepPrimAPI_MakeTorus maker(axis, r1, r2);
-    return std::make_unique<TopoDS_Shape>(maker.Shape());
-}
 
 std::unique_ptr<TopoDS_Shape> make_empty() {
     TopoDS_Compound compound;
@@ -514,29 +377,14 @@ void compound_add(TopoDS_Shape& compound, const TopoDS_Shape& child) {
     builder.Add(compound, child);
 }
 
-// ==================== Builders (solid → solid with history) ====================
-// Bug 1 fix: All boolean results are deep-copied via BRepBuilderAPI_Copy
-// so the result shares no Handle<Geom_XXX> with the input shapes.
-// This prevents STATUS_HEAP_CORRUPTION when shapes are dropped in any order.
+// ==================== History relays ====================
+// Every row of the algorithm table below reports its history through these
+// two maps: `relay_from_builder` reads a builder's `Modified` / `IsDeleted`
+// for each input (an untouched input is its own descendant; a deleted one is
+// absent), `relay_from_copy` reads `BRepBuilderAPI_Copy` where a row copies
+// its result. `Generated` is deliberately not read: history is descent between
+// elements of one kind.
 //
-// Cross-section face collection: Modified() is called BEFORE BRepBuilderAPI_Copy
-// because the copy severs the history table. Each collected face is then
-// individually deep-copied so it is independent of the operator object.
-//
-// Why Modified() and not Generated():
-//   The cross-section face is the tool's boundary face trimmed (bounded) to fit
-//   inside the shape operand.  OCCT records this as Modified(tool_face) because
-//   the face still represents the same plane — it just has smaller bounds.
-//   Generated(tool_face) returns empty because no wholly NEW face was created.
-//
-// out_history is built from composable relay maps shared by boolean (copy-based)
-// and shell/fillet/chamfer (no copy):
-//   relay_from_builder  {result/pre → src}  (all builders)
-//   relay_from_copy     {post → pre}        (OCCT copy history)
-//   relay_into_history  compose → flat [post, src] pairs
-// relay_into_history emits only the outermost map's keys (the real result
-// faces), so no bogus pre/src-only ids leak in.
-
 // Modified relations retain all source identities, including merges. Face and
 // edge history share one representation; consumers filter by result topology.
 using ShapeRelay = std::unordered_multimap<uint64_t, uint64_t>;
@@ -585,167 +433,7 @@ static void relay_from_copy(
     }
 }
 
-static void relay_identity(const TopoDS_Shape& source, ShapeRelay& relay)
-{
-    for (const auto kind : {TopAbs_FACE, TopAbs_EDGE}) {
-        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> shapes;
-        TopExp::MapShapes(source, kind, shapes);
-        for (int index = 1; index <= shapes.Extent(); ++index) {
-            const auto identity = reinterpret_cast<uint64_t>(shapes(index).TShape().get());
-            relay.emplace(identity, identity);
-        }
-    }
-}
-
-static void relay_into_history(
-    const ShapeRelay* relay1,
-    const ShapeRelay* relay2,
-    rust::Vec<uint64_t>& out)
-{
-    if (relay2 == nullptr) {
-        for (const auto& pair : *relay1) {
-            out.push_back(pair.first);
-            out.push_back(pair.second);
-        }
-    } else {
-        for (const auto& pair : *relay2) {
-            const auto sources = relay1->equal_range(pair.second);
-            for (auto it = sources.first; it != sources.second; ++it) {
-                out.push_back(pair.first);
-                out.push_back(it->second);
-            }
-        }
-    }
-}
-
-// Evaluate any boolean expression in DNF on N solids via BOPAlgo_CellsBuilder.
-// 1 回の Perform() で全交差を計算し、clause ごとに AddToResult を呼ぶ。
-std::unique_ptr<TopoDS_Shape> builder_cells(
-    const std::vector<TopoDS_Shape>& solids,
-    rust::Slice<const int64_t> clauses,
-    rust::Vec<uint64_t>& out_history)
-{
-    try {
-        if (solids.empty() || clauses.size() == 0) return nullptr;
-
-        // BOPAlgo_CellsBuilder は引数 N≥2 を想定するため、単一 solid の場合は
-        // deep copy のみで返す (DNF clause が `[+1, 0]` の単純ケース)。
-        if (solids.size() == 1 && clauses.size() == 2 && clauses[0] == 1 && clauses[1] == 0) {
-            BRepBuilderAPI_Copy copier(solids[0], true, false);
-            auto shape = std::make_unique<TopoDS_Shape>(copier.Shape());
-            // No builder: copy history gives {post → pre==src}; flatten it.
-            ShapeRelay relay;
-            relay_from_copy(copier, solids[0], relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return shape;
-        }
-
-        BOPAlgo_CellsBuilder cb;
-        NCollection_List<TopoDS_Shape> args;
-        for (const auto& s : solids) args.Append(s);
-        cb.SetArguments(args);
-        cb.Perform();
-        if (cb.HasErrors()) return nullptr;
-
-        const int material = 1;
-        NCollection_List<TopoDS_Shape> take, avoid;
-        for (size_t i = 0; i < clauses.size(); ++i) {
-            int64_t lit = clauses[i];
-            if (lit == 0) {
-                if (!take.IsEmpty()) {
-                    cb.AddToResult(take, avoid, material);
-                }
-                take.Clear();
-                avoid.Clear();
-                continue;
-            }
-            int64_t idx = (lit > 0 ? lit : -lit) - 1;
-            if (idx < 0 || idx >= static_cast<int64_t>(solids.size())) return nullptr;
-            if (lit > 0) take.Append(solids[static_cast<size_t>(idx)]);
-            else         avoid.Append(solids[static_cast<size_t>(idx)]);
-        }
-        cb.RemoveInternalBoundaries();
-
-        ShapeRelay relay1, relay2;
-        for (const auto& s : solids) {
-            relay_from_builder(cb, s, relay1);
-        }
-
-        BRepBuilderAPI_Copy copier(cb.Shape(), true, false);
-        auto shape = std::make_unique<TopoDS_Shape>(copier.Shape());
-        relay_from_copy(copier, cb.Shape(), relay2);
-        relay_into_history(&relay1, &relay2, out_history);
-        return shape;
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Unify shared faces / collinear edges. `out_history` is populated with
-// flat [new_id, old_id, ...] pairs covering every old face that survived
-// (either unchanged, or merged into a result face); identical layout to
-// `builder_boolean`'s history.
-std::unique_ptr<TopoDS_Shape> builder_clean(
-    const TopoDS_Shape& shape,
-    rust::Vec<uint64_t>& out_history)
-{
-    try {
-        ShapeUpgrade_UnifySameDomain unifier(shape, true, true, true);
-        unifier.AllowInternalEdges(false);
-        unifier.Build();
-
-        auto result = std::make_unique<TopoDS_Shape>(unifier.Shape());
-
-        Handle(BRepTools_History) history = unifier.History();
-        if (!history.IsNull()) {
-            for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-                const TopoDS_Shape& old_face = ex.Current();
-                uint64_t old_id = reinterpret_cast<uint64_t>(old_face.TShape().get());
-                if (history->IsRemoved(old_face)) continue;
-                const NCollection_List<TopoDS_Shape>& mods = history->Modified(old_face);
-                if (mods.IsEmpty()) {
-                    // Unchanged: TShape* is the same in the result.
-                    out_history.push_back(old_id);
-                    out_history.push_back(old_id);
-                } else {
-                    // Merged: use only the first resulting face (first-found wins).
-                    uint64_t new_id = reinterpret_cast<uint64_t>(mods.First().TShape().get());
-                    out_history.push_back(new_id);
-                    out_history.push_back(old_id);
-                }
-            }
-        }
-        return result;
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
 // ==================== Transforms (solid → solid, no history) ====================
-
-std::unique_ptr<TopoDS_Shape> transform_affine(const TopoDS_Shape& shape, rust::Slice<const double> matrix, rust::Vec<uint64_t>& edge_history)
-{
-    if (matrix.size() != 12) throw std::runtime_error("affine transform needs twelve coefficients");
-    try {
-        gp_GTrsf transform;
-        for (int row = 1; row <= 3; ++row)
-            for (int column = 1; column <= 4; ++column)
-                transform.SetValue(row, column, matrix[(row - 1) * 4 + column - 1]);
-        BRepBuilderAPI_GTransform builder(shape, transform, true);
-        if (!builder.IsDone()) throw std::runtime_error("affine transform failed");
-        for (TopExp_Explorer edges(shape, TopAbs_EDGE); edges.More(); edges.Next()) {
-            const auto& original = edges.Current();
-            for (const auto& modified : builder.Modified(original)) {
-                if (modified.ShapeType() != TopAbs_EDGE) continue;
-                edge_history.push_back(reinterpret_cast<uint64_t>(modified.TShape().get()));
-                edge_history.push_back(reinterpret_cast<uint64_t>(original.TShape().get()));
-            }
-        }
-        return std::make_unique<TopoDS_Shape>(builder.Shape());
-    } catch (const Standard_Failure& error) {
-        throw std::runtime_error(error.what());
-    }
-}
 
 std::unique_ptr<TopoDS_Shape> transform_translate(
     const TopoDS_Shape& shape,
@@ -771,40 +459,14 @@ std::unique_ptr<TopoDS_Shape> transform_rotate(
     }
 }
 
-std::unique_ptr<TopoDS_Shape> transform_scale(
-    const TopoDS_Shape& shape,
-    double cx, double cy, double cz,
-    double factor)
-{
-    try {
-        gp_Trsf trsf;
-        trsf.SetScale(gp_Pnt(cx, cy, cz), factor);
-        BRepBuilderAPI_Transform transform(shape, trsf, true);
-        return std::make_unique<TopoDS_Shape>(transform.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-std::unique_ptr<TopoDS_Shape> transform_mirror(
-    const TopoDS_Shape& shape,
-    double ox, double oy, double oz,
-    double nx, double ny, double nz)
-{
-    try {
-        gp_Trsf trsf;
-        trsf.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
-        BRepBuilderAPI_Transform transform(shape, trsf, true);
-        return std::make_unique<TopoDS_Shape>(transform.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
 // ==================== Shape Queries ====================
 
 bool shape_is_null(const TopoDS_Shape& shape) {
     return shape.IsNull();
+}
+
+bool shape_is_closed(const TopoDS_Shape& shape) {
+    return !shape.IsNull() && BRep_Tool::IsClosed(shape);
 }
 
 uint32_t shape_kind(const TopoDS_Shape& shape) {
@@ -1502,26 +1164,6 @@ std::unique_ptr<TopoDS_Edge> mirror_edge(
     }
 }
 
-std::unique_ptr<std::vector<TopoDS_Edge>> edge_vec_new() {
-    return std::make_unique<std::vector<TopoDS_Edge>>();
-}
-
-void edge_vec_push(std::vector<TopoDS_Edge>& v, const TopoDS_Edge& e) {
-    v.push_back(e);
-}
-
-void edge_vec_push_null(std::vector<TopoDS_Edge>& v) {
-    v.push_back(TopoDS_Edge());
-}
-
-std::unique_ptr<std::vector<TopoDS_Face>> face_vec_new() {
-    return std::make_unique<std::vector<TopoDS_Face>>();
-}
-
-void face_vec_push(std::vector<TopoDS_Face>& v, const TopoDS_Face& f) {
-    v.push_back(f);
-}
-
 std::unique_ptr<std::vector<TopoDS_Shape>> shape_vec_new() {
     return std::make_unique<std::vector<TopoDS_Shape>>();
 }
@@ -1530,477 +1172,12 @@ void shape_vec_push(std::vector<TopoDS_Shape>& v, const TopoDS_Shape& s) {
     v.push_back(s);
 }
 
-std::unique_ptr<TopoDS_Shape> builder_thick_solid(
-    const TopoDS_Shape& solid,
-    const std::vector<TopoDS_Face>& open_faces,
-    double thickness,
-    double tolerance,
-    rust::Vec<uint64_t>& out_history)
-{
-    try {
-        // Empty open_faces: MakeThickSolidByJoin degenerates to a plain offset
-        // shape (no cavity) because it needs at least one removed face to
-        // build the first wall W1. Instead, build the solid explicitly as
-        // outer_shell + reversed inner_shell so the result is a sealed solid
-        // with an internal void (OCCT permits multi-shell solids).
-        if (open_faces.empty()) {
-            BRepOffsetAPI_MakeOffsetShape offset;
-            offset.PerformByJoin(
-                solid, thickness,
-                /*tolerance=*/ tolerance,
-                /*mode=*/ BRepOffset_Skin,
-                /*intersection=*/ false,
-                /*selfInter=*/ false,
-                /*join=*/ GeomAbs_Arc);
-            if (!offset.IsDone()) return nullptr;
-            TopoDS_Shape offset_shape = offset.Shape();
-
-            auto extract_shell = [](const TopoDS_Shape& s) -> TopoDS_Shell {
-                if (s.ShapeType() == TopAbs_SHELL) return TopoDS::Shell(s);
-                TopExp_Explorer ex(s, TopAbs_SHELL);
-                if (!ex.More()) return TopoDS_Shell();
-                return TopoDS::Shell(ex.Current());
-            };
-
-            TopoDS_Shell original_shell = extract_shell(solid);
-            TopoDS_Shell offset_shell = extract_shell(offset_shape);
-            if (original_shell.IsNull() || offset_shell.IsNull()) return nullptr;
-
-            // thickness sign determines which shell is outer:
-            //   negative → offset shrinks inward: original = outer, offset = inner cavity
-            //   positive → offset expands outward: offset = outer, original = inner cavity
-            TopoDS_Shell outer = thickness < 0.0 ? original_shell : offset_shell;
-            TopoDS_Shell inner = thickness < 0.0 ? offset_shell : original_shell;
-
-            BRepBuilderAPI_MakeSolid solid_maker(outer);
-            solid_maker.Add(TopoDS::Shell(inner.Reversed()));
-            if (!solid_maker.IsDone()) return nullptr;
-            // Sealed case: original faces are retained as identity; offset walls
-            // are Generated (src is an edge) and intentionally absent.
-            ShapeRelay relay;
-            relay_identity(solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid_maker.Solid());
-        }
-
-        NCollection_List<TopoDS_Shape> faces_to_remove;
-        for (const auto& f : open_faces) faces_to_remove.Append(f);
-
-        BRepOffsetAPI_MakeThickSolid builder;
-        builder.MakeThickSolidByJoin(
-            solid, faces_to_remove, thickness,
-            /*tolerance=*/ tolerance,
-            /*mode=*/ BRepOffset_Skin,
-            /*intersection=*/ false,
-            /*selfInter=*/ false,
-            /*join=*/ GeomAbs_Arc);
-        builder.Build();
-        if (!builder.IsDone()) return nullptr;
-        // No copy, so relay keys are final faces.
-        ShapeRelay relay;
-        relay_from_builder(builder, solid, relay);
-        // MakeThickSolid does not flag removed open faces as IsDeleted; drop
-        // their (identity) pairs since those faces are absent from the result.
-        for (const auto& f : open_faces) {
-            uint64_t removed_id = reinterpret_cast<uint64_t>(f.TShape().get());
-            for (auto it = relay.begin(); it != relay.end(); ) {
-                if (it->second == removed_id) it = relay.erase(it);
-                else ++it;
-            }
-        }
-        relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(builder.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
+void shape_vec_push_edge(std::vector<TopoDS_Shape>& v, const TopoDS_Edge& e) {
+    v.push_back(e);
 }
 
-std::unique_ptr<TopoDS_Shape> builder_fillet(
-    const TopoDS_Shape& solid,
-    const std::vector<TopoDS_Edge>& edges,
-    double radius,
-    rust::Vec<uint64_t>& out_history)
-{
-    try {
-        if (edges.empty()) {
-            // No-op: shallow copy; every face is identity.
-            ShapeRelay relay;
-            relay_identity(solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        BRepFilletAPI_MakeFillet mk(solid);
-        for (const TopoDS_Edge& e : edges) {
-            if (e.IsNull()) continue;
-            mk.Add(radius, e);
-        }
-        mk.Build();
-        if (!mk.IsDone()) return nullptr;
-        TopoDS_Shape result = mk.Shape();
-        if (result.IsNull()) return nullptr;
-        // MakeFillet can wrap the solid in a compound even if it contains only one solid.
-        // Solid::new requires a TopAbs_SOLID, so extract the first one if we got a container.
-        if (result.ShapeType() != TopAbs_SOLID) {
-            TopExp_Explorer ex(result, TopAbs_SOLID);
-            if (!ex.More()) return nullptr;
-            result = ex.Current();
-        }
-        // No copy, so relay keys are final faces (identity for untouched).
-        ShapeRelay relay;
-        relay_from_builder(mk, solid, relay);
-        relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(result);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-std::unique_ptr<TopoDS_Shape> builder_chamfer(
-    const TopoDS_Shape& solid,
-    const std::vector<TopoDS_Edge>& edges,
-    double distance,
-    rust::Vec<uint64_t>& out_history)
-{
-    try {
-        if (edges.empty()) {
-            // No-op: shallow copy; every face is identity.
-            ShapeRelay relay;
-            relay_identity(solid, relay);
-            relay_into_history(&relay, nullptr, out_history);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        BRepFilletAPI_MakeChamfer mk(solid);
-        for (const TopoDS_Edge& e : edges) {
-            if (e.IsNull()) continue;
-            mk.Add(distance, e);
-        }
-        mk.Build();
-        if (!mk.IsDone()) return nullptr;
-        TopoDS_Shape result = mk.Shape();
-        if (result.IsNull()) return nullptr;
-        // Like MakeFillet, MakeChamfer may wrap the result in a compound even if it contains only one solid.
-        // Extract the first solid so Solid::new's TopAbs_SOLID invariant holds.
-        if (result.ShapeType() != TopAbs_SOLID) {
-            TopExp_Explorer ex(result, TopAbs_SOLID);
-            if (!ex.More()) return nullptr;
-            result = ex.Current();
-        }
-        // No copy, so relay keys are final faces (identity for untouched).
-        ShapeRelay relay;
-        relay_from_builder(mk, solid, relay);
-        relay_into_history(&relay, nullptr, out_history);
-        return std::make_unique<TopoDS_Shape>(result);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Extrude a closed profile wire into a solid via BRepPrimAPI_MakePrism.
-// Edges → Wire → Face → Prism (solid).
-std::unique_ptr<TopoDS_Shape> make_extrude(
-    const std::vector<TopoDS_Edge>& profile_edges,
-    double dx, double dy, double dz)
-{
-    try {
-        if (profile_edges.empty()) return nullptr;
-        BRepBuilderAPI_MakeWire wire_maker;
-        for (const auto& e : profile_edges) wire_maker.Add(e);
-        if (!wire_maker.IsDone()) return nullptr;
-        BRepBuilderAPI_MakeFace face_maker(wire_maker.Wire());
-        if (!face_maker.IsDone()) return nullptr;
-        gp_Vec dir(dx, dy, dz);
-        BRepPrimAPI_MakePrism prism(face_maker.Face(), dir);
-        prism.Build();
-        if (!prism.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(prism.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Unified MakePipeShell wrapper.  Handles both single-profile sweep and
-// multi-profile morphing sweep.  Profile sections in `all_edges` are
-// separated by null-edge sentinels (TopoDS_Edge().IsNull() == true).
-// `aux_spine_edges` is used only when orient == 3 (Auxiliary); pass an
-// empty vector for other modes.
-std::unique_ptr<TopoDS_Shape> make_pipe_shell(
-    const std::vector<TopoDS_Edge>& all_edges,
-    const std::vector<TopoDS_Edge>& spine_edges,
-    uint32_t orient,
-    double ux, double uy, double uz,
-    const std::vector<TopoDS_Edge>& aux_spine_edges)
-{
-    try {
-        if (all_edges.empty() || spine_edges.empty()) return nullptr;
-
-        // Build the spine wire.
-        BRepBuilderAPI_MakeWire spineMaker;
-        for (const auto& e : spine_edges) spineMaker.Add(e);
-        if (!spineMaker.IsDone()) return nullptr;
-        TopoDS_Wire spine = spineMaker.Wire();
-
-        BRepOffsetAPI_MakePipeShell shell(spine);
-
-        // Configure trihedron law.
-        switch (orient) {
-            case 0: {
-                // Fixed: lock the trihedron to the spine-start frame.
-                BRepAdaptor_Curve curve(spine_edges.front());
-                gp_Pnt start_pnt;
-                gp_Vec start_tan;
-                curve.D1(curve.FirstParameter(), start_pnt, start_tan);
-                if (start_tan.Magnitude() < Precision::Confusion()) return nullptr;
-                gp_Dir tdir(start_tan);
-                gp_Dir xref = (std::abs(tdir.X()) < 0.9) ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
-                gp_Ax2 fixed_ax2(start_pnt, tdir, xref);
-                shell.SetMode(fixed_ax2);
-                break;
-            }
-            case 1: {
-                // Torsion: raw Frenet.
-                shell.SetMode(true);
-                break;
-            }
-            case 2: {
-                // Up(v): fix the binormal direction.
-                gp_Vec up_vec(ux, uy, uz);
-                if (up_vec.Magnitude() < Precision::Confusion()) return nullptr;
-                shell.SetMode(gp_Dir(up_vec));
-                break;
-            }
-            case 3: {
-                // Auxiliary: build aux spine wire and use it for twist control.
-                if (aux_spine_edges.empty()) return nullptr;
-                BRepBuilderAPI_MakeWire auxMaker;
-                for (const auto& e : aux_spine_edges) auxMaker.Add(e);
-                if (!auxMaker.IsDone()) return nullptr;
-                shell.SetMode(auxMaker.Wire(), true);
-                break;
-            }
-            default: {
-                shell.SetMode(true);
-                break;
-            }
-        }
-
-        // Split all_edges by null sentinels into profile wires and Add each.
-        BRepBuilderAPI_MakeWire wire_maker;
-        bool has_edges = false;
-        for (const auto& e : all_edges) {
-            if (e.IsNull()) {
-                if (!wire_maker.IsDone()) return nullptr;
-                shell.Add(wire_maker.Wire(), false, false);
-                wire_maker = BRepBuilderAPI_MakeWire();
-                has_edges = false;
-            } else {
-                wire_maker.Add(e);
-                has_edges = true;
-            }
-        }
-        // Last section (after final sentinel or single section with no sentinel).
-        if (has_edges) {
-            if (!wire_maker.IsDone()) return nullptr;
-            shell.Add(wire_maker.Wire(), false, false);
-        }
-
-        shell.Build();
-        if (!shell.IsDone()) return nullptr;
-        if (!shell.MakeSolid()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(shell.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Loft (skin) a solid through a sequence of cross-section wires.
-//
-// `all_edges` is a flat edge list with sections delimited by null-edge
-// sentinels (TopoDS_Edge().IsNull()); ≥2 sections required. Built via
-// BRepOffsetAPI_ThruSections with isSolid=true (cap open ends with planar
-// faces). `ruled=false` gives B-spline / C² smoothed interpolation through
-// all sections; `ruled=true` gives per-panel ruled (straight-line) surfaces
-// between adjacent sections. Both pass through every section wire exactly.
-std::unique_ptr<TopoDS_Shape> make_loft(
-    const std::vector<TopoDS_Edge>& all_edges,
-    bool ruled, double tolerance)
-{
-    try {
-        BRepOffsetAPI_ThruSections loft(
-            /*isSolid=*/true,
-            /*isRuled=*/ruled,
-            tolerance);
-
-        // Split all_edges by null sentinels into section wires.
-        size_t wire_count = 0;
-        BRepBuilderAPI_MakeWire wire_maker;
-        bool has_edges = false;
-
-        auto flush_wire = [&]() -> bool {
-            if (!has_edges) return true;
-            if (!wire_maker.IsDone()) return false;
-            loft.AddWire(wire_maker.Wire());
-            wire_count++;
-            wire_maker = BRepBuilderAPI_MakeWire();
-            has_edges = false;
-            return true;
-        };
-
-        for (const auto& e : all_edges) {
-            if (e.IsNull()) {
-                if (!flush_wire()) return nullptr;
-            } else {
-                wire_maker.Add(e);
-                has_edges = true;
-            }
-        }
-        if (!flush_wire()) return nullptr;
-
-        if (wire_count < 2) return nullptr;
-
-        loft.Build();
-        if (!loft.IsDone()) return nullptr;
-        return std::make_unique<TopoDS_Shape>(loft.Shape());
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Sew (stitch) free faces into a single closed shell and upgrade it to a
-// solid. BRepBuilderAPI_Sewing merges boundary edges that coincide within
-// `tolerance`; the sewn result must contain exactly one closed shell —
-// gaps (open shell), leftover free faces, or multiple disconnected shells
-// all return nullptr. The solid is oriented with BRepLib::OrientClosedSolid
-// so the enclosed volume is positive regardless of input face orientation.
-std::unique_ptr<TopoDS_Shape> make_sewn_solid(
-    const std::vector<TopoDS_Face>& faces,
-    double tolerance)
-{
-    try {
-        if (faces.empty()) return nullptr;
-        BRepBuilderAPI_Sewing sewing(tolerance);
-        for (const auto& f : faces) sewing.Add(f);
-        sewing.Perform();
-        const TopoDS_Shape& sewn = sewing.SewedShape();
-        if (sewn.IsNull()) return nullptr;
-
-        // A fully sewn input comes back as a single TopAbs_SHELL; partial
-        // sewing yields a compound mixing shells and free faces, in which
-        // case requiring exactly one shell rejects the stray-face cases.
-        std::vector<TopoDS_Shell> shells;
-        if (sewn.ShapeType() == TopAbs_SHELL) {
-            shells.push_back(TopoDS::Shell(sewn));
-        } else {
-            for (TopExp_Explorer ex(sewn, TopAbs_SHELL); ex.More(); ex.Next()) {
-                shells.push_back(TopoDS::Shell(ex.Current()));
-            }
-        }
-        if (shells.size() != 1) return nullptr;
-        if (!BRep_Tool::IsClosed(shells.front())) return nullptr;
-
-        BRepBuilderAPI_MakeSolid solid_maker(shells.front());
-        if (!solid_maker.IsDone()) return nullptr;
-        TopoDS_Solid solid = solid_maker.Solid();
-        BRepLib::OrientClosedSolid(solid);
-        return std::make_unique<TopoDS_Shape>(solid);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// Offset the given faces of `shape` by signed `offset` along their normals; a
-// SHELL/compound result is upgraded so Rust always receives a TopAbs_SOLID.
-std::unique_ptr<TopoDS_Shape> make_offset(
-    const TopoDS_Shape& shape,
-    const std::vector<TopoDS_Face>& faces,
-    double offset,
-    double tolerance)
-{
-    try {
-        // Per-face offsets need the Intersection join; Arc rejects them.
-        BRepOffset_MakeOffset offsetter;
-        offsetter.Initialize(
-            shape, /*offset=*/ 0.0, tolerance,
-            /*mode=*/ BRepOffset_Skin,
-            /*intersection=*/ true,
-            /*selfInter=*/ false,
-            /*join=*/ GeomAbs_Intersection);
-        for (const TopoDS_Face& f : faces) offsetter.SetOffsetOnFace(f, offset);
-        offsetter.MakeOffsetShape();
-        if (!offsetter.IsDone()) return nullptr;
-        TopoDS_Shape result = offsetter.Shape();
-        if (result.IsNull()) return nullptr;
-
-        if (result.ShapeType() == TopAbs_COMPOUND) {
-            // Unwrap a one-solid (or one-shell) compound.
-            TopExp_Explorer solid_ex(result, TopAbs_SOLID);
-            if (solid_ex.More()) {
-                result = solid_ex.Current();
-                solid_ex.Next();
-                if (solid_ex.More()) return nullptr;
-            } else {
-                TopExp_Explorer shell_ex(result, TopAbs_SHELL);
-                if (!shell_ex.More()) return nullptr;
-                result = shell_ex.Current();
-                shell_ex.Next();
-                if (shell_ex.More()) return nullptr;
-            }
-        }
-
-        if (result.ShapeType() == TopAbs_SOLID) {
-            return std::make_unique<TopoDS_Shape>(result);
-        }
-        if (result.ShapeType() == TopAbs_SHELL && BRep_Tool::IsClosed(result)) {
-            BRepBuilderAPI_MakeSolid solid_maker(TopoDS::Shell(result));
-            if (!solid_maker.IsDone()) return nullptr;
-            TopoDS_Solid solid = solid_maker.Solid();
-            BRepLib::OrientClosedSolid(solid);
-            return std::make_unique<TopoDS_Shape>(solid);
-        }
-        return nullptr;
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-// ==================== Open shells (surfaces) ====================
-
-// Reduce an OCCT result to the single shell it is supposed to be. A shell comes
-// through untouched, a lone face becomes a one-face shell, and anything left
-// over — extra shells, faces the operation failed to attach — is reported rather
-// than silently dropped. `context` names the operation in the message.
-static TopoDS_Shape single_shell(const TopoDS_Shape& shape, const char* context) {
-    const std::string where(context);
-    if (shape.IsNull()) throw std::runtime_error(where + ": OCCT returned an empty shape");
-
-    auto count = [](const TopoDS_Shape& s, TopAbs_ShapeEnum kind) {
-        size_t n = 0;
-        for (TopExp_Explorer ex(s, kind); ex.More(); ex.Next()) ++n;
-        return n;
-    };
-
-    const size_t shells = count(shape, TopAbs_SHELL);
-    if (shells > 1) {
-        throw std::runtime_error(where + ": result holds " + std::to_string(shells) + " shells, expected one");
-    }
-    if (shells == 1) {
-        TopExp_Explorer shell_ex(shape, TopAbs_SHELL);
-        const TopoDS_Shape shell = shell_ex.Current();
-        if (count(shape, TopAbs_FACE) != count(shell, TopAbs_FACE)) {
-            throw std::runtime_error(where + ": faces stayed outside the shell (gaps wider than the tolerance)");
-        }
-        return shell;
-    }
-
-    const size_t faces = count(shape, TopAbs_FACE);
-    if (faces != 1) {
-        throw std::runtime_error(where + ": result holds " + std::to_string(faces) + " faces and no shell");
-    }
-    TopExp_Explorer face_ex(shape, TopAbs_FACE);
-    BRep_Builder builder;
-    TopoDS_Shell shell;
-    builder.MakeShell(shell);
-    builder.Add(shell, face_ex.Current());
-    return shell;
+void shape_vec_push_face(std::vector<TopoDS_Shape>& v, const TopoDS_Face& f) {
+    v.push_back(f);
 }
 
 static GeomAbs_JoinType join_type(uint32_t join, const std::string& where) {
@@ -2021,73 +1198,436 @@ static GeomAbs_Shape continuity_order(uint32_t continuity, const std::string& wh
     }
 }
 
-std::unique_ptr<TopoDS_Shape> make_sewn_shell(
-    const std::vector<TopoDS_Face>& faces,
-    double tolerance)
-{
-    try {
-        if (faces.empty()) throw std::runtime_error("sew: no faces given");
-        BRepBuilderAPI_Sewing sewing(tolerance);
-        for (const auto& f : faces) sewing.Add(f);
-        sewing.Perform();
-        return std::make_unique<TopoDS_Shape>(single_shell(sewing.SewedShape(), "sew"));
-    } catch (const Standard_Failure& error) {
-        throw std::runtime_error(std::string("sew: ") + error.what());
+// ==================== The algorithm table ====================
+//
+// One entry point, `apply_algorithm`, over every OCCT algorithm the binding
+// offers. A row is the constructor call and nothing else: input shapes arrive
+// in one vector (selections such as fillet edges or open faces are shapes in
+// that vector too), numbers in `scalars`, codes and counts in `integers`, laid
+// out as `occt::algorithm::Algorithm::call` in Rust states them. Failure,
+// history and the swept ends are read once, below the rows, through the
+// `BRepBuilderAPI_MakeShape` contract (`Modified` / `IsDeleted`; an untouched
+// input is its own descendant) that every builder in the table honours, or
+// through the four-line adapters for the builders that spell it differently
+// (sewing, cells, unification).
+//
+// Designed twice: (1) one hand-written function per algorithm, each carrying
+// its own argument marshalling, try/catch, null check and history walk -- the
+// state before this table, ~730 lines for fifteen algorithms, every new one a
+// copy; (2) one switch over rows sharing the marshalling and the extraction.
+// (2) is taken: adding an algorithm is a row here and a variant in Rust.
+
+namespace {
+
+// `BRepOffsetAPI_ThruSections` keeps global state; two concurrent lofts
+// corrupt the heap, so that row runs under this lock.
+std::mutex loft_lock;
+
+// Row codes, mirrored by `Algorithm::code` in `src/occt/algorithm.rs`.
+enum Row : uint32_t {
+    ROW_BOX = 0,
+    ROW_SPHERE = 1,
+    ROW_CYLINDER = 2,
+    ROW_CONE = 3,
+    ROW_TORUS = 4,
+    ROW_HALF_SPACE = 5,
+    ROW_WIRE = 6,
+    ROW_FACE = 7,
+    ROW_PRISM = 8,
+    ROW_REVOLUTION = 9,
+    ROW_PIPE_SHELL = 10,
+    ROW_THRU_SECTIONS = 11,
+    ROW_OFFSET_SHAPE = 12,
+    ROW_OFFSET_FACES = 13,
+    ROW_THICK_SOLID = 14,
+    ROW_SOLID = 15,
+    ROW_FILLING = 16,
+    ROW_SEW = 17,
+    ROW_BOOLEAN = 18,
+    ROW_SPLITTER = 19,
+    ROW_SECTION = 20,
+    ROW_CELLS = 21,
+    ROW_FILLET = 22,
+    ROW_CHAMFER = 23,
+    ROW_TRANSFORM = 24,
+    ROW_DRAFT_ANGLE = 25,
+    ROW_PROJECTION = 26,
+    ROW_UNIFY = 27,
+};
+
+// The arguments of one call, read by position. Every accessor refuses a
+// position the caller did not fill rather than reading past the slice.
+struct Call {
+    const std::vector<TopoDS_Shape>& shapes;
+    rust::Slice<const double> scalars;
+    rust::Slice<const int64_t> integers;
+
+    const TopoDS_Shape& shape(size_t index) const {
+        if (index >= shapes.size()) throw std::invalid_argument("fewer input shapes than the row takes");
+        return shapes[index];
+    }
+    double scalar(size_t index) const {
+        if (index >= scalars.size()) throw std::invalid_argument("fewer scalars than the row takes");
+        return scalars[index];
+    }
+    int64_t integer(size_t index) const {
+        if (index >= integers.size()) throw std::invalid_argument("fewer integers than the row takes");
+        return integers[index];
+    }
+    size_t count(size_t index) const {
+        const int64_t value = integer(index);
+        if (value < 0) throw std::invalid_argument("a count is negative");
+        return static_cast<size_t>(value);
+    }
+    gp_Pnt pnt(size_t at) const { return gp_Pnt(scalar(at), scalar(at + 1), scalar(at + 2)); }
+    gp_Vec vec(size_t at) const { return gp_Vec(scalar(at), scalar(at + 1), scalar(at + 2)); }
+    gp_Dir dir(size_t at) const { return gp_Dir(vec(at)); }
+    NCollection_List<TopoDS_Shape> list(size_t from, size_t to) const {
+        NCollection_List<TopoDS_Shape> shapes;
+        for (size_t index = from; index < to; ++index) shapes.Append(shape(index));
+        return shapes;
+    }
+};
+
+struct Product {
+    TopoDS_Shape shape;
+    ShapeRelay relay;
+    std::vector<TopoDS_Shape> ends;
+};
+
+// The two section instances a sweep or a loft places at its ends, for the
+// builders that publish them.
+template <class Builder>
+void ends_of(Builder& builder, std::vector<TopoDS_Shape>& ends) {
+    if constexpr (std::is_base_of_v<BRepPrimAPI_MakeSweep, Builder> || std::is_same_v<BRepOffsetAPI_ThruSections, Builder>) {
+        ends = {builder.FirstShape(), builder.LastShape()};
     }
 }
 
-std::unique_ptr<TopoDS_Shape> make_offset_shell(
-    const TopoDS_Shape& shell,
-    double offset,
-    double tolerance,
-    uint32_t join)
-{
-    try {
-        BRepOffsetAPI_MakeOffsetShape offsetter;
-        offsetter.PerformByJoin(
-            shell, offset, tolerance,
-            /*Mode=*/ BRepOffset_Skin,
-            /*Intersection=*/ false,
-            /*SelfInter=*/ false,
-            join_type(join, "offset"),
-            /*RemoveIntEdges=*/ false);
-        if (!offsetter.IsDone()) throw std::runtime_error("offset: BRepOffsetAPI_MakeOffsetShape did not complete");
-        return std::make_unique<TopoDS_Shape>(single_shell(offsetter.Shape(), "offset"));
-    } catch (const Standard_Failure& error) {
-        throw std::runtime_error(std::string("offset: ") + error.what());
-    }
+// What every row returns: the built shape, checked, with the history of every
+// input read through the builder.
+template <class Builder>
+Product done(Builder& builder, const Call& call) {
+    if (!builder.IsDone()) throw std::runtime_error("did not complete");
+    Product product{builder.Shape(), {}, {}};
+    if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
+    for (const auto& input : call.shapes) relay_from_builder(builder, input, product.relay);
+    ends_of(builder, product.ends);
+    return product;
 }
 
-std::unique_ptr<TopoDS_Shape> make_filled_shell(
-    const std::vector<TopoDS_Edge>& boundary,
-    uint32_t continuity,
-    uint32_t degree,
-    uint32_t points_on_curve,
-    uint32_t iterations,
-    uint32_t max_degree,
-    uint32_t max_segments,
-    double tolerance_2d,
-    double tolerance_3d,
-    double tolerance_angular,
-    double tolerance_curvature)
+template <class Builder>
+Product built(Builder& builder, const Call& call) {
+    builder.Build();
+    return done(builder, call);
+}
+
+template <class Builder>
+Product boolean_row(Builder& builder, const Call& call, size_t arguments) {
+    builder.SetArguments(call.list(0, arguments));
+    builder.SetTools(call.list(arguments, call.shapes.size()));
+    builder.Build();
+    if (builder.HasErrors()) throw std::runtime_error("reported errors");
+    return done(builder, call);
+}
+
+Product row(Row row, const Call& call) {
+    switch (row) {
+        case ROW_BOX: {
+            BRepPrimAPI_MakeBox builder(call.pnt(0), call.pnt(3));
+            return built(builder, call);
+        }
+        case ROW_SPHERE: {
+            BRepPrimAPI_MakeSphere builder(call.pnt(0), call.scalar(3));
+            return built(builder, call);
+        }
+        case ROW_CYLINDER: {
+            BRepPrimAPI_MakeCylinder builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7));
+            return built(builder, call);
+        }
+        case ROW_CONE: {
+            BRepPrimAPI_MakeCone builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7), call.scalar(8));
+            return built(builder, call);
+        }
+        case ROW_TORUS: {
+            BRepPrimAPI_MakeTorus builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7));
+            return built(builder, call);
+        }
+        case ROW_HALF_SPACE: {
+            // The material lies on the side the normal points to.
+            const gp_Pnt origin = call.pnt(0);
+            const gp_Dir normal = call.dir(3);
+            BRepBuilderAPI_MakeFace face(gp_Pln(origin, normal));
+            BRepPrimAPI_MakeHalfSpace builder(face.Face(), origin.Translated(gp_Vec(normal)));
+            return built(builder, call);
+        }
+        case ROW_WIRE: {
+            BRepBuilderAPI_MakeWire builder;
+            for (const auto& edge : call.shapes) builder.Add(TopoDS::Edge(edge));
+            return built(builder, call);
+        }
+        case ROW_FACE: {
+            BRepBuilderAPI_MakeFace builder(TopoDS::Wire(call.shape(0)));
+            return built(builder, call);
+        }
+        case ROW_PRISM: {
+            BRepPrimAPI_MakePrism builder(call.shape(0), call.vec(0));
+            return built(builder, call);
+        }
+        case ROW_REVOLUTION: {
+            BRepPrimAPI_MakeRevol builder(call.shape(0), gp_Ax1(call.pnt(0), call.dir(3)), call.scalar(6));
+            return built(builder, call);
+        }
+        case ROW_PIPE_SHELL: {
+            // integers: [frame, has auxiliary spine, sections, law samples, solid]
+            // scalars: [up xyz, tolerance (NaN: the builder's own), stations..., scales...]
+            BRepOffsetAPI_MakePipeShell builder(TopoDS::Wire(call.shape(0)));
+            size_t next = 1;
+            switch (call.integer(0)) {
+                case 0: {
+                    BRepAdaptor_Curve curve(TopoDS::Edge(TopExp_Explorer(call.shape(0), TopAbs_EDGE).Current()));
+                    gp_Pnt start;
+                    gp_Vec tangent;
+                    curve.D1(curve.FirstParameter(), start, tangent);
+                    const gp_Dir along(tangent);
+                    builder.SetMode(gp_Ax2(start, along, std::abs(along.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0)));
+                    break;
+                }
+                case 1: builder.SetMode(true); break;
+                case 2: builder.SetMode(call.dir(0)); break;
+                case 3: builder.SetMode(TopoDS::Wire(call.shape(next++)), true); break;
+                case 4: builder.SetMode(false); break;
+                default: throw std::invalid_argument("unknown sweep frame");
+            }
+            const size_t sections = call.count(2);
+            const size_t samples = call.count(3);
+            if (samples > 0) {
+                if (sections != 1) throw std::invalid_argument("a scale law sweeps exactly one section");
+                NCollection_Array1<gp_Pnt2d> values(1, static_cast<int>(samples));
+                for (size_t sample = 0; sample < samples; ++sample) {
+                    values.SetValue(static_cast<int>(sample + 1), gp_Pnt2d(call.scalar(4 + sample), call.scalar(4 + samples + sample)));
+                }
+                Handle(Law_Interpol) law = new Law_Interpol();
+                law->Set(values, false);
+                builder.SetLaw(TopoDS::Wire(call.shape(next)), law, false, true);
+            } else {
+                for (size_t section = 0; section < sections; ++section) builder.Add(TopoDS::Wire(call.shape(next + section)), false, false);
+            }
+            if (std::isfinite(call.scalar(3))) builder.SetTolerance(call.scalar(3), call.scalar(3), call.scalar(3));
+            builder.Build();
+            if (call.integer(4) != 0 && (!builder.IsDone() || !builder.MakeSolid())) throw std::runtime_error("could not close the swept shell into a solid");
+            return done(builder, call);
+        }
+        case ROW_THRU_SECTIONS: {
+            BRepOffsetAPI_ThruSections builder(call.integer(1) != 0, call.integer(0) != 0, call.scalar(0));
+            for (const auto& section : call.shapes) builder.AddWire(TopoDS::Wire(section));
+            return built(builder, call);
+        }
+        case ROW_OFFSET_SHAPE: {
+            BRepOffsetAPI_MakeOffsetShape builder;
+            builder.PerformByJoin(call.shape(0), call.scalar(0), call.scalar(1), BRepOffset_Skin, call.integer(1) != 0, false, join_type(static_cast<uint32_t>(call.integer(0)), "offset"), false);
+            return done(builder, call);
+        }
+        case ROW_OFFSET_FACES: {
+            BRepOffset_MakeOffset builder;
+            builder.Initialize(call.shape(0), 0.0, call.scalar(1), BRepOffset_Skin, true, false, GeomAbs_Intersection);
+            for (size_t face = 1; face < call.shapes.size(); ++face) builder.SetOffsetOnFace(TopoDS::Face(call.shape(face)), call.scalar(0));
+            builder.MakeOffsetShape();
+            return done(builder, call);
+        }
+        case ROW_THICK_SOLID: {
+            BRepOffsetAPI_MakeThickSolid builder;
+            builder.MakeThickSolidByJoin(call.shape(0), call.list(1, call.shapes.size()), call.scalar(0), call.scalar(1), BRepOffset_Skin, false, false, join_type(static_cast<uint32_t>(call.integer(0)), "thicken"));
+            Product product = built(builder, call);
+            // The builder does not flag the removed faces as deleted; nothing in
+            // the result descends from them.
+            for (size_t face = 1; face < call.shapes.size(); ++face) {
+                const auto removed = reinterpret_cast<uint64_t>(call.shape(face).TShape().get());
+                for (auto pair = product.relay.begin(); pair != product.relay.end();) {
+                    pair = pair->second == removed ? product.relay.erase(pair) : std::next(pair);
+                }
+            }
+            return product;
+        }
+        case ROW_SOLID: {
+            // The first shell bounds the material; every further shell is a
+            // cavity, reversed so its normals face the void.
+            BRepBuilderAPI_MakeSolid builder(TopoDS::Shell(call.shape(0)));
+            for (size_t cavity = 1; cavity < call.shapes.size(); ++cavity) builder.Add(TopoDS::Shell(call.shape(cavity).Reversed()));
+            Product product = built(builder, call);
+            TopoDS_Solid solid = TopoDS::Solid(product.shape);
+            BRepLib::OrientClosedSolid(solid);
+            product.shape = solid;
+            return product;
+        }
+        case ROW_FILLING: {
+            // integers: [continuity, degree, points on curve, iterations, max degree, max segments]
+            // scalars: [tolerance 2d, tolerance 3d, tolerance angular, tolerance curvature]
+            BRepOffsetAPI_MakeFilling builder(static_cast<int>(call.integer(1)), static_cast<int>(call.integer(2)), static_cast<int>(call.integer(3)), false, call.scalar(0), call.scalar(1), call.scalar(2), call.scalar(3), static_cast<int>(call.integer(4)), static_cast<int>(call.integer(5)));
+            const GeomAbs_Shape order = continuity_order(static_cast<uint32_t>(call.integer(0)), "fill");
+            for (const auto& edge : call.shapes) builder.Add(TopoDS::Edge(edge), order, true);
+            return built(builder, call);
+        }
+        case ROW_SEW: {
+            BRepBuilderAPI_Sewing sewing(call.scalar(0));
+            for (const auto& face : call.shapes) sewing.Add(face);
+            sewing.Perform();
+            Product product{sewing.SewedShape(), {}, {}};
+            if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
+            for (const auto& face : call.shapes) {
+                const auto source = reinterpret_cast<uint64_t>(face.TShape().get());
+                const TopoDS_Shape& sewn = sewing.IsModified(face) ? sewing.Modified(face) : face;
+                product.relay.emplace(reinterpret_cast<uint64_t>(sewn.TShape().get()), source);
+            }
+            return product;
+        }
+        case ROW_BOOLEAN: {
+            BRepAlgoAPI_BooleanOperation builder;
+            switch (call.integer(0)) {
+                case 0: builder.SetOperation(BOPAlgo_FUSE); break;
+                case 1: builder.SetOperation(BOPAlgo_CUT); break;
+                case 2: builder.SetOperation(BOPAlgo_COMMON); break;
+                default: throw std::invalid_argument("unknown boolean operation");
+            }
+            return boolean_row(builder, call, call.count(1));
+        }
+        case ROW_SPLITTER: {
+            BRepAlgoAPI_Splitter builder;
+            return boolean_row(builder, call, call.count(0));
+        }
+        case ROW_SECTION: {
+            BRepAlgoAPI_Section builder;
+            return boolean_row(builder, call, call.count(0));
+        }
+        case ROW_CELLS: {
+            // integers: the DIMACS-flat DNF (`+i` takes shape i-1, `-i` avoids
+            // it, `0` ends a clause). A lone shape taken whole is copied, which
+            // is what the cells builder would return for it.
+            if (call.shapes.size() == 1 && call.integers.size() == 2 && call.integer(0) == 1 && call.integer(1) == 0) {
+                BRepBuilderAPI_Copy copier(call.shape(0), true, false);
+                Product product{copier.Shape(), {}, {}};
+                relay_from_copy(copier, call.shape(0), product.relay);
+                return product;
+            }
+            BOPAlgo_CellsBuilder cells;
+            cells.SetArguments(call.list(0, call.shapes.size()));
+            cells.Perform();
+            if (cells.HasErrors()) throw std::runtime_error("reported errors");
+            NCollection_List<TopoDS_Shape> take, avoid;
+            for (const int64_t literal : call.integers) {
+                if (literal == 0) {
+                    if (!take.IsEmpty()) cells.AddToResult(take, avoid, 1);
+                    take.Clear();
+                    avoid.Clear();
+                    continue;
+                }
+                const TopoDS_Shape& shape = call.shape(static_cast<size_t>(std::llabs(literal)) - 1);
+                (literal > 0 ? take : avoid).Append(shape);
+            }
+            cells.RemoveInternalBoundaries();
+            // The result shares no geometry with its inputs: the copy severs
+            // it, and its own history composes with the builder's.
+            ShapeRelay built_relay;
+            for (const auto& input : call.shapes) relay_from_builder(cells, input, built_relay);
+            BRepBuilderAPI_Copy copier(cells.Shape(), true, false);
+            ShapeRelay copied_relay;
+            relay_from_copy(copier, cells.Shape(), copied_relay);
+            Product product{copier.Shape(), {}, {}};
+            for (const auto& pair : copied_relay) {
+                const auto sources = built_relay.equal_range(pair.second);
+                for (auto source = sources.first; source != sources.second; ++source) product.relay.emplace(pair.first, source->second);
+            }
+            return product;
+        }
+        case ROW_FILLET: {
+            BRepFilletAPI_MakeFillet builder(call.shape(0));
+            for (size_t edge = 1; edge < call.shapes.size(); ++edge) builder.Add(call.scalar(0), TopoDS::Edge(call.shape(edge)));
+            return built(builder, call);
+        }
+        case ROW_CHAMFER: {
+            BRepFilletAPI_MakeChamfer builder(call.shape(0));
+            for (size_t edge = 1; edge < call.shapes.size(); ++edge) builder.Add(call.scalar(0), TopoDS::Edge(call.shape(edge)));
+            return built(builder, call);
+        }
+        case ROW_TRANSFORM: {
+            // scalars: a row-major 3 by 4 affine matrix.
+            gp_GTrsf transform;
+            for (int line = 1; line <= 3; ++line) {
+                for (int column = 1; column <= 4; ++column) transform.SetValue(line, column, call.scalar(static_cast<size_t>((line - 1) * 4 + column - 1)));
+            }
+            BRepBuilderAPI_GTransform builder(call.shape(0), transform, true);
+            return built(builder, call);
+        }
+        case ROW_DRAFT_ANGLE: {
+            // scalars: [direction xyz, angle, neutral plane origin xyz, neutral plane normal xyz]
+            BRepOffsetAPI_DraftAngle builder(call.shape(0));
+            const gp_Pln neutral(call.pnt(4), call.dir(7));
+            for (size_t face = 1; face < call.shapes.size(); ++face) builder.Add(TopoDS::Face(call.shape(face)), call.dir(0), call.scalar(3), neutral);
+            return built(builder, call);
+        }
+        case ROW_PROJECTION: {
+            BRepProj_Projection builder(call.shape(0), call.shape(1), call.dir(0));
+            if (!builder.IsDone()) throw std::runtime_error("did not complete");
+            return Product{builder.Shape(), {}, {}};
+        }
+        case ROW_UNIFY: {
+            ShapeUpgrade_UnifySameDomain builder(call.shape(0), true, true, true);
+            builder.AllowInternalEdges(false);
+            builder.Build();
+            Product product{builder.Shape(), {}, {}};
+            if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
+            const Handle(BRepTools_History) history = builder.History();
+            if (history.IsNull()) return product;
+            for (TopExp_Explorer faces(call.shape(0), TopAbs_FACE); faces.More(); faces.Next()) {
+                const TopoDS_Shape& face = faces.Current();
+                if (history->IsRemoved(face)) continue;
+                const auto& merged = history->Modified(face);
+                const TopoDS_Shape& post = merged.IsEmpty() ? face : merged.First();
+                product.relay.emplace(reinterpret_cast<uint64_t>(post.TShape().get()), reinterpret_cast<uint64_t>(face.TShape().get()));
+            }
+            return product;
+        }
+    }
+    throw std::invalid_argument("unknown algorithm row");
+}
+
+const char* row_name(uint32_t code) {
+    static const char* const names[] = {
+        "box", "sphere", "cylinder", "cone", "torus", "half space", "wire", "face", "prism", "revolution",
+        "pipe shell", "thru sections", "offset shape", "offset faces", "thick solid", "solid", "filling", "sew",
+        "boolean", "splitter", "section", "cells", "fillet", "chamfer", "transform", "draft angle", "projection", "unify",
+    };
+    return code < sizeof(names) / sizeof(names[0]) ? names[code] : "unknown";
+}
+
+}  // namespace
+
+std::unique_ptr<TopoDS_Shape> apply_algorithm(
+    uint32_t algorithm,
+    const std::vector<TopoDS_Shape>& shapes,
+    rust::Slice<const double> scalars,
+    rust::Slice<const int64_t> integers,
+    rust::Vec<uint64_t>& out_history,
+    std::vector<TopoDS_Shape>& out_ends)
 {
+    const std::string name(row_name(algorithm));
     try {
-        if (boundary.empty()) throw std::runtime_error("fill: no boundary edges given");
-        BRepOffsetAPI_MakeFilling filler(
-            static_cast<int>(degree),
-            static_cast<int>(points_on_curve),
-            static_cast<int>(iterations),
-            /*Anisotropie=*/ false,
-            tolerance_2d, tolerance_3d, tolerance_angular, tolerance_curvature,
-            static_cast<int>(max_degree),
-            static_cast<int>(max_segments));
-        const GeomAbs_Shape order = continuity_order(continuity, "fill");
-        for (const auto& e : boundary) filler.Add(e, order, /*IsBound=*/ true);
-        filler.Build();
-        if (!filler.IsDone()) throw std::runtime_error("fill: BRepOffsetAPI_MakeFilling did not complete");
-        return std::make_unique<TopoDS_Shape>(single_shell(filler.Shape(), "fill"));
+        std::unique_lock<std::mutex> loft_guard(loft_lock, std::defer_lock);
+        if (algorithm == ROW_THRU_SECTIONS) loft_guard.lock();
+        Product product = row(static_cast<Row>(algorithm), Call{shapes, scalars, integers});
+        std::set<std::pair<uint64_t, uint64_t>> seen;
+        for (const auto& pair : product.relay) {
+            // Each pair once, in the order the relay yields it.
+            if (!seen.insert({pair.first, pair.second}).second) continue;
+            out_history.push_back(pair.first);
+            out_history.push_back(pair.second);
+        }
+        out_ends = std::move(product.ends);
+        return std::make_unique<TopoDS_Shape>(product.shape);
     } catch (const Standard_Failure& error) {
-        throw std::runtime_error(std::string("fill: ") + error.what());
+        throw std::runtime_error(name + ": " + error.what());
+    } catch (const std::exception& error) {
+        throw std::runtime_error(name + ": " + error.what());
     }
 }
 
@@ -2395,8 +1935,6 @@ private:
     char buf_[8192];
     size_t pos_ = 0;
 };
-
-
 
 std::unique_ptr<TopoDS_Shape> read_brep_stream(
     rust::Slice<const uint8_t> data, size_t& out_consumed)
