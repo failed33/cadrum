@@ -43,6 +43,10 @@ pub enum Error {
 	/// Sewing (`Solid::sew`) failed: the faces do not form exactly one closed shell within the tolerance.
 	Sew(String),
 
+	/// An open-surface operation (`Shell::fill`, `Shell::free_boundaries`) failed:
+	/// the filling could not meet its constraints, or the shape could not be analysed.
+	Surface(String),
+
 	/// Surface offset (`Solid::offset`) failed: the offset surfaces self-intersect.
 	Offset(String),
 
@@ -67,6 +71,7 @@ impl std::fmt::Display for Error {
 			Error::Chamfer(msg) => write!(f, "Chamfer failed: {msg}"),
 			Error::Loft(msg) => write!(f, "Loft failed: {msg}"),
 			Error::Sew(msg) => write!(f, "Sew failed: {msg}"),
+			Error::Surface(msg) => write!(f, "Surface failed: {msg}"),
 			Error::Offset(msg) => write!(f, "Offset failed: {msg}"),
 			Error::Bspline(msg) => write!(f, "Bspline failed: {msg}"),
 		}

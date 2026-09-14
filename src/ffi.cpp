@@ -11,6 +11,7 @@
 #include <Law_Interpol.hxx>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 // --- Topology types & navigation ---
 #include <TopoDS.hxx>
@@ -63,12 +64,14 @@
 
 // --- Boolean operations & shape cleanup ---
 #include <BOPAlgo_CellsBuilder.hxx>
+#include <ShapeAnalysis_FreeBounds.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepTools_History.hxx>
 
 // --- Sweep / pipe / loft ---
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepOffsetAPI_MakeFilling.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -76,6 +79,7 @@
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffset_Mode.hxx>
 #include <GeomAbs_JoinType.hxx>
+#include <GeomAbs_Shape.hxx>
 
 // --- Mesh, classification, mass / surface properties ---
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -388,9 +392,21 @@ static TopoDS_Shape try_sew_orphan_faces(
 
 // ==================== Compound Decompose/Compose ====================
 
-std::unique_ptr<std::vector<TopoDS_Shape>> decompose_into_solids(const TopoDS_Shape& shape) {
+std::unique_ptr<std::vector<TopoDS_Shape>> decompose_by_kind(const TopoDS_Shape& shape, uint32_t kind) {
     auto result = std::make_unique<std::vector<TopoDS_Shape>>();
-    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+    TopAbs_ShapeEnum wanted;
+    switch (kind) {
+        case 1: wanted = TopAbs_COMPOUND;  break;
+        case 2: wanted = TopAbs_COMPSOLID; break;
+        case 3: wanted = TopAbs_SOLID;     break;
+        case 4: wanted = TopAbs_SHELL;     break;
+        case 5: wanted = TopAbs_FACE;      break;
+        case 6: wanted = TopAbs_WIRE;      break;
+        case 7: wanted = TopAbs_EDGE;      break;
+        case 8: wanted = TopAbs_VERTEX;    break;
+        default: return result;  // null / other name no topology to explore
+    }
+    for (TopExp_Explorer ex(shape, wanted); ex.More(); ex.Next()) {
         result->push_back(ex.Current());  // shallow handle copy
     }
     return result;
@@ -694,8 +710,19 @@ bool shape_is_null(const TopoDS_Shape& shape) {
     return shape.IsNull();
 }
 
-bool shape_is_solid(const TopoDS_Shape& shape) {
-    return !shape.IsNull() && shape.ShapeType() == TopAbs_SOLID;
+uint32_t shape_kind(const TopoDS_Shape& shape) {
+    if (shape.IsNull()) return 0;
+    switch (shape.ShapeType()) {
+        case TopAbs_COMPOUND:  return 1;
+        case TopAbs_COMPSOLID: return 2;
+        case TopAbs_SOLID:     return 3;
+        case TopAbs_SHELL:     return 4;
+        case TopAbs_FACE:      return 5;
+        case TopAbs_WIRE:      return 6;
+        case TopAbs_EDGE:      return 7;
+        case TopAbs_VERTEX:    return 8;
+        default:               return 9;
+    }
 }
 
 double shape_volume(const TopoDS_Shape& shape) {
@@ -1835,6 +1862,165 @@ std::unique_ptr<TopoDS_Shape> make_offset(
         return nullptr;
     } catch (const Standard_Failure&) {
         return nullptr;
+    }
+}
+
+// ==================== Open shells (surfaces) ====================
+
+// Reduce an OCCT result to the single shell it is supposed to be. A shell comes
+// through untouched, a lone face becomes a one-face shell, and anything left
+// over — extra shells, faces the operation failed to attach — is reported rather
+// than silently dropped. `context` names the operation in the message.
+static TopoDS_Shape single_shell(const TopoDS_Shape& shape, const char* context) {
+    const std::string where(context);
+    if (shape.IsNull()) throw std::runtime_error(where + ": OCCT returned an empty shape");
+
+    auto count = [](const TopoDS_Shape& s, TopAbs_ShapeEnum kind) {
+        size_t n = 0;
+        for (TopExp_Explorer ex(s, kind); ex.More(); ex.Next()) ++n;
+        return n;
+    };
+
+    const size_t shells = count(shape, TopAbs_SHELL);
+    if (shells > 1) {
+        throw std::runtime_error(where + ": result holds " + std::to_string(shells) + " shells, expected one");
+    }
+    if (shells == 1) {
+        TopExp_Explorer shell_ex(shape, TopAbs_SHELL);
+        const TopoDS_Shape shell = shell_ex.Current();
+        if (count(shape, TopAbs_FACE) != count(shell, TopAbs_FACE)) {
+            throw std::runtime_error(where + ": faces stayed outside the shell (gaps wider than the tolerance)");
+        }
+        return shell;
+    }
+
+    const size_t faces = count(shape, TopAbs_FACE);
+    if (faces != 1) {
+        throw std::runtime_error(where + ": result holds " + std::to_string(faces) + " faces and no shell");
+    }
+    TopExp_Explorer face_ex(shape, TopAbs_FACE);
+    BRep_Builder builder;
+    TopoDS_Shell shell;
+    builder.MakeShell(shell);
+    builder.Add(shell, face_ex.Current());
+    return shell;
+}
+
+static GeomAbs_JoinType join_type(uint32_t join, const std::string& where) {
+    switch (join) {
+        case 0: return GeomAbs_Arc;
+        case 1: return GeomAbs_Tangent;
+        case 2: return GeomAbs_Intersection;
+        default: throw std::runtime_error(where + ": unknown join type " + std::to_string(join));
+    }
+}
+
+static GeomAbs_Shape continuity_order(uint32_t continuity, const std::string& where) {
+    switch (continuity) {
+        case 0: return GeomAbs_C0;
+        case 1: return GeomAbs_G1;
+        case 2: return GeomAbs_G2;
+        default: throw std::runtime_error(where + ": unknown continuity " + std::to_string(continuity));
+    }
+}
+
+std::unique_ptr<TopoDS_Shape> make_sewn_shell(
+    const std::vector<TopoDS_Face>& faces,
+    double tolerance)
+{
+    try {
+        if (faces.empty()) throw std::runtime_error("sew: no faces given");
+        BRepBuilderAPI_Sewing sewing(tolerance);
+        for (const auto& f : faces) sewing.Add(f);
+        sewing.Perform();
+        return std::make_unique<TopoDS_Shape>(single_shell(sewing.SewedShape(), "sew"));
+    } catch (const Standard_Failure& error) {
+        throw std::runtime_error(std::string("sew: ") + error.what());
+    }
+}
+
+std::unique_ptr<TopoDS_Shape> make_offset_shell(
+    const TopoDS_Shape& shell,
+    double offset,
+    double tolerance,
+    uint32_t join)
+{
+    try {
+        BRepOffsetAPI_MakeOffsetShape offsetter;
+        offsetter.PerformByJoin(
+            shell, offset, tolerance,
+            /*Mode=*/ BRepOffset_Skin,
+            /*Intersection=*/ false,
+            /*SelfInter=*/ false,
+            join_type(join, "offset"),
+            /*RemoveIntEdges=*/ false);
+        if (!offsetter.IsDone()) throw std::runtime_error("offset: BRepOffsetAPI_MakeOffsetShape did not complete");
+        return std::make_unique<TopoDS_Shape>(single_shell(offsetter.Shape(), "offset"));
+    } catch (const Standard_Failure& error) {
+        throw std::runtime_error(std::string("offset: ") + error.what());
+    }
+}
+
+std::unique_ptr<TopoDS_Shape> make_filled_shell(
+    const std::vector<TopoDS_Edge>& boundary,
+    uint32_t continuity,
+    uint32_t degree,
+    uint32_t points_on_curve,
+    uint32_t iterations,
+    uint32_t max_degree,
+    uint32_t max_segments,
+    double tolerance_2d,
+    double tolerance_3d,
+    double tolerance_angular,
+    double tolerance_curvature)
+{
+    try {
+        if (boundary.empty()) throw std::runtime_error("fill: no boundary edges given");
+        BRepOffsetAPI_MakeFilling filler(
+            static_cast<int>(degree),
+            static_cast<int>(points_on_curve),
+            static_cast<int>(iterations),
+            /*Anisotropie=*/ false,
+            tolerance_2d, tolerance_3d, tolerance_angular, tolerance_curvature,
+            static_cast<int>(max_degree),
+            static_cast<int>(max_segments));
+        const GeomAbs_Shape order = continuity_order(continuity, "fill");
+        for (const auto& e : boundary) filler.Add(e, order, /*IsBound=*/ true);
+        filler.Build();
+        if (!filler.IsDone()) throw std::runtime_error("fill: BRepOffsetAPI_MakeFilling did not complete");
+        return std::make_unique<TopoDS_Shape>(single_shell(filler.Shape(), "fill"));
+    } catch (const Standard_Failure& error) {
+        throw std::runtime_error(std::string("fill: ") + error.what());
+    }
+}
+
+std::unique_ptr<std::vector<TopoDS_Edge>> free_boundary_edges(
+    const TopoDS_Shape& shape,
+    bool split_closed,
+    bool split_open,
+    rust::Vec<uint32_t>& out_loop_sizes)
+{
+    try {
+        ShapeAnalysis_FreeBounds analysis(
+            shape,
+            split_closed,
+            split_open,
+            /*checkinternaledges=*/ false);
+        auto edges = std::make_unique<std::vector<TopoDS_Edge>>();
+        const TopoDS_Compound loops[2] = {analysis.GetClosedWires(), analysis.GetOpenWires()};
+        for (const TopoDS_Compound& wires : loops) {
+            for (TopExp_Explorer wire_ex(wires, TopAbs_WIRE); wire_ex.More(); wire_ex.Next()) {
+                uint32_t size = 0;
+                for (TopExp_Explorer ex(wire_ex.Current(), TopAbs_EDGE); ex.More(); ex.Next()) {
+                    edges->push_back(TopoDS::Edge(ex.Current()));
+                    ++size;
+                }
+                out_loop_sizes.push_back(size);
+            }
+        }
+        return edges;
+    } catch (const Standard_Failure& error) {
+        throw std::runtime_error(std::string("free boundaries: ") + error.what());
     }
 }
 

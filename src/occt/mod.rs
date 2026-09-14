@@ -6,4 +6,6 @@ pub mod face;
 #[path = "../ffi.rs"]
 mod ffi;
 pub mod io;
+pub mod shape;
+pub mod shell;
 pub mod solid;

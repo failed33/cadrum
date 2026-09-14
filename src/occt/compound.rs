@@ -1,4 +1,5 @@
 use super::ffi;
+use super::shape::{Shape, ShapeKind};
 use super::solid::Solid;
 #[cfg(feature = "color")]
 use crate::common::color::Color;
@@ -20,14 +21,14 @@ impl CompoundShape {
 	/// a boolean call has no meaningful history of its own; the boolean
 	/// result will populate one fresh.
 	pub fn new<'a>(solids: impl IntoIterator<Item = &'a Solid>) -> Self {
-		let mut inner = ffi::make_empty();
 		#[cfg(feature = "color")]
 		let mut colormap = std::collections::HashMap::new();
-		for s in solids {
-			ffi::compound_add(inner.pin_mut(), s.inner());
-			#[cfg(feature = "color")]
+		let solids: Vec<&Solid> = solids.into_iter().collect();
+		#[cfg(feature = "color")]
+		for s in &solids {
 			colormap.extend(s.colormap().iter().map(|(&k, &v)| (k, v)));
 		}
+		let inner = compound_of(solids.into_iter().map(Solid::inner));
 		CompoundShape {
 			inner,
 			#[cfg(feature = "color")]
@@ -63,12 +64,11 @@ impl CompoundShape {
 	/// is harmless because `iter_history()` consumers filter pairs by checking
 	/// `src_id` against the original input's face IDs.
 	pub fn decompose(self) -> Vec<Solid> {
-		let solid_shapes = ffi::decompose_into_solids(&self.inner);
-		solid_shapes
-			.iter()
-			.map(|s| {
+		shapes_of_kind(&self.inner, ShapeKind::Solid)
+			.into_iter()
+			.map(|shape| {
 				Solid::new(
-					ffi::clone_shape_handle(s),
+					shape.into_inner(),
 					#[cfg(feature = "color")]
 					self.colormap.clone(),
 					self.history.clone(),
@@ -76,4 +76,21 @@ impl CompoundShape {
 			})
 			.collect()
 	}
+}
+
+/// Assemble any shapes into one `TopoDS_Compound`. The kind-generic half of
+/// [`CompoundShape::new`]: shells and solids are gathered identically, only
+/// the colormap merge above is solid-specific.
+pub(crate) fn compound_of<'a>(shapes: impl IntoIterator<Item = &'a ffi::TopoDS_Shape>) -> cxx::UniquePtr<ffi::TopoDS_Shape> {
+	let mut inner = ffi::make_empty();
+	for shape in shapes {
+		ffi::compound_add(inner.pin_mut(), shape);
+	}
+	inner
+}
+
+/// Every sub-shape of `kind`, as carriers. Owns the handle clone so callers
+/// never hold a borrow of the compound they decomposed.
+pub(crate) fn shapes_of_kind(shape: &ffi::TopoDS_Shape, kind: ShapeKind) -> Vec<Shape> {
+	ffi::decompose_by_kind(shape, kind.code()).iter().map(|found| Shape::new(ffi::clone_shape_handle(found))).collect()
 }

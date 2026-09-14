@@ -104,7 +104,8 @@ mod ffi_bridge {
 		// ==================== Shape Queries ====================
 
 		fn shape_is_null(shape: &TopoDS_Shape) -> bool;
-		fn shape_is_solid(shape: &TopoDS_Shape) -> bool;
+		// Codes mirrored by `occt::shape::ShapeKind`; see ffi.h.
+		fn shape_kind(shape: &TopoDS_Shape) -> u32;
 		fn shape_is_valid(shape: &TopoDS_Shape) -> Result<bool>;
 		fn sweep_law(profile: &CxxVector<TopoDS_Edge>, spine: &CxxVector<TopoDS_Edge>, stations: &[f64], scales: &[f64], tolerance: f64, start_edges: &mut Vec<u64>, end_edges: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 		fn shape_volume(shape: &TopoDS_Shape) -> f64;
@@ -116,7 +117,7 @@ mod ffi_bridge {
 
 		// ==================== Compound Decompose/Compose ====================
 
-		fn decompose_into_solids(shape: &TopoDS_Shape) -> UniquePtr<CxxVector<TopoDS_Shape>>;
+		fn decompose_by_kind(shape: &TopoDS_Shape, kind: u32) -> UniquePtr<CxxVector<TopoDS_Shape>>;
 		fn compound_add(compound: Pin<&mut TopoDS_Shape>, child: &TopoDS_Shape);
 
 		// ==================== Meshing ====================
@@ -169,6 +170,14 @@ mod ffi_bridge {
 		fn make_loft(all_edges: &CxxVector<TopoDS_Edge>, ruled: bool, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
 		fn make_sewn_solid(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
 		fn make_offset(shape: &TopoDS_Shape, faces: &CxxVector<TopoDS_Face>, offset: f64, tolerance: f64) -> UniquePtr<TopoDS_Shape>;
+
+		// Open-shell (surface) entry points. Every one reports failure as a
+		// C++ exception, surfaced here as `cxx::Exception`, never as a null shape.
+		fn make_sewn_shell(faces: &CxxVector<TopoDS_Face>, tolerance: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn make_offset_shell(shell: &TopoDS_Shape, offset: f64, tolerance: f64, join: u32) -> Result<UniquePtr<TopoDS_Shape>>;
+		#[allow(clippy::too_many_arguments)]
+		fn make_filled_shell(boundary: &CxxVector<TopoDS_Edge>, continuity: u32, degree: u32, points_on_curve: u32, iterations: u32, max_degree: u32, max_segments: u32, tolerance_2d: f64, tolerance_3d: f64, tolerance_angular: f64, tolerance_curvature: f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn free_boundary_edges(shape: &TopoDS_Shape, split_closed: bool, split_open: bool, out_loop_sizes: &mut Vec<u32>) -> Result<UniquePtr<CxxVector<TopoDS_Edge>>>;
 		fn make_bspline_solid(coords: &[f64], nu: u32, nv: u32, u_periodic: bool) -> UniquePtr<TopoDS_Shape>;
 
 		fn edge_vec_new() -> UniquePtr<CxxVector<TopoDS_Edge>>;

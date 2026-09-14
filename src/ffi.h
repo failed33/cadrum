@@ -177,7 +177,11 @@ std::unique_ptr<TopoDS_Shape> transform_mirror(
 // ==================== Shape Queries ====================
 
 bool shape_is_null(const TopoDS_Shape& shape);
-bool shape_is_solid(const TopoDS_Shape& shape);
+// Topological kind as a stable code, mirrored by Rust's `ShapeKind`:
+// 0 null, 1 compound, 2 compsolid, 3 solid, 4 shell, 5 face, 6 wire, 7 edge,
+// 8 vertex, 9 anything else. Mapped explicitly so the wire format does not
+// inherit OCCT's own enum ordering.
+uint32_t shape_kind(const TopoDS_Shape& shape);
 double shape_volume(const TopoDS_Shape& shape);
 double shape_surface_area(const TopoDS_Shape& shape);
 void shape_center_of_mass(const TopoDS_Shape& shape,
@@ -193,7 +197,10 @@ void shape_bounding_box(const TopoDS_Shape& shape,
 
 // ==================== Compound Decompose/Compose ====================
 
-std::unique_ptr<std::vector<TopoDS_Shape>> decompose_into_solids(const TopoDS_Shape& shape);
+// Every sub-shape of the given `shape_kind` code, the shape itself included when
+// it already has that kind. A code that names no topology (null, other) yields an
+// empty vector, so the caller needs no special case.
+std::unique_ptr<std::vector<TopoDS_Shape>> decompose_by_kind(const TopoDS_Shape& shape, uint32_t kind);
 void compound_add(TopoDS_Shape& compound, const TopoDS_Shape& child);
 
 // ==================== Meshing ====================
@@ -383,6 +390,56 @@ std::unique_ptr<TopoDS_Shape> make_offset(
     const std::vector<TopoDS_Face>& faces,
     double offset,
     double tolerance);
+
+// ==================== Open shells (surfaces) ====================
+// These four are the open-surface counterparts of the solid entry points above:
+// they stop at TopAbs_SHELL and never upgrade to a solid, so `Solid`'s closed,
+// positive-volume guarantee is unaffected. Each reports failure by throwing
+// std::runtime_error carrying the OCCT reason; none of them returns nullptr.
+
+// Sew free faces into exactly one shell, open or closed, without the
+// BRepBuilderAPI_MakeSolid upgrade `make_sewn_solid` applies. Faces left
+// unsewn beside the shell are rejected, as they are for the solid form.
+std::unique_ptr<TopoDS_Shape> make_sewn_shell(
+    const std::vector<TopoDS_Face>& faces,
+    double tolerance);
+
+// Offset a shell by signed `offset` through BRepOffsetAPI_MakeOffsetShape in
+// skin mode. `join` selects the corner treatment: 0 arc, 1 tangent, 2
+// intersection.
+std::unique_ptr<TopoDS_Shape> make_offset_shell(
+    const TopoDS_Shape& shell,
+    double offset,
+    double tolerance,
+    uint32_t join);
+
+// Fill the region bounded by `boundary` with BRepOffsetAPI_MakeFilling and
+// return it as a one-face shell. `continuity` is the order required of every
+// boundary constraint: 0 C0, 1 G1, 2 G2 — G1 and G2 need constraints that
+// carry a support face. Every tolerance and degree of the underlying
+// GeomPlate solver is a parameter; the binding holds no defaults of its own.
+std::unique_ptr<TopoDS_Shape> make_filled_shell(
+    const std::vector<TopoDS_Edge>& boundary,
+    uint32_t continuity,
+    uint32_t degree,
+    uint32_t points_on_curve,
+    uint32_t iterations,
+    uint32_t max_degree,
+    uint32_t max_segments,
+    double tolerance_2d,
+    double tolerance_3d,
+    double tolerance_angular,
+    double tolerance_curvature);
+
+// Free (single-adjacent) boundaries of an already sewn shape, as edges grouped
+// into loops: `out_loop_sizes` holds the edge count of each loop, in order.
+// `split_closed` / `split_open` are ShapeAnalysis_FreeBounds' wire splitting
+// controls; false/false keeps every loop whole.
+std::unique_ptr<std::vector<TopoDS_Edge>> free_boundary_edges(
+    const TopoDS_Shape& shape,
+    bool split_closed,
+    bool split_open,
+    rust::Vec<uint32_t>& out_loop_sizes);
 
 // Build a B-spline surface solid from a 2D point grid.
 // `coords` is a flat array of xyz triples, length = 3 * nu * nv.

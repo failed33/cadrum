@@ -49,3 +49,22 @@ source relations when OCCT merges topology. The deep-copy relay uses
 copy correspondence. This supports surviving-edge resolution across native trim
 and fillet operations. The application keeps this history inside its worker-local
 evaluated graph. It does not serialize native identities as durable selection.
+
+## Open surfaces
+
+A shell carrier now sits beside `Solid`. `Shell` is a single `TopAbs_SHELL`,
+open or closed, that is never upgraded to a solid, so `Solid`'s closed,
+positive-volume guarantee is unchanged and neither type can produce the other.
+It binds `BRepBuilderAPI_Sewing` without the `BRepBuilderAPI_MakeSolid` step,
+`BRepOffsetAPI_MakeOffsetShape` in skin mode, `BRepOffsetAPI_MakeFilling` for a
+boundary loop, and `ShapeAnalysis_FreeBounds` for the loops that remain open.
+Every tolerance, continuity, degree and join type is a parameter of the call;
+the binding holds no defaults of its own, and the failure of any of these
+entry points is an OCCT message carried out through the crate's `Error`, never
+a null shape. No new OCCT toolkit is linked and no geometry is computed here.
+
+The carrier these wrap is kind-generic: it holds any `TopoDS_Shape` and reports
+its kind rather than asserting one, and BRep reading, compound assembly,
+decomposition and triangulation take the kind as an argument. A BRep payload
+can therefore be read as shells without the `TopAbs_SOLID` filter that
+`Solid::read_brep` keeps. `cad-kernel` tags the archive with the kind it wrote.

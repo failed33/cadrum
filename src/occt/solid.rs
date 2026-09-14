@@ -228,7 +228,7 @@ impl Solid {
 	/// # Panics
 	/// Panics if `inner` is not `TopAbs_SOLID` (and not null).
 	pub(crate) fn new(inner: cxx::UniquePtr<ffi::TopoDS_Shape>, #[cfg(feature = "color")] colormap: std::collections::HashMap<u64, crate::common::color::Color>, history: Vec<u64>) -> Self {
-		debug_assert!(ffi::shape_is_null(&inner) || ffi::shape_is_solid(&inner), "Solid::new called with a non-SOLID shape");
+		debug_assert!(matches!(super::shape::ShapeKind::of(&inner), super::shape::ShapeKind::Null | super::shape::ShapeKind::Solid), "Solid::new called with a non-SOLID shape");
 		Solid {
 			inner,
 			edges: OnceLock::new(),
