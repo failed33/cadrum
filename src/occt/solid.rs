@@ -3,7 +3,7 @@
 //! the kind check on what the table returned, the face colormap and the
 //! history of the last operation, and nothing else.
 
-use super::algorithm::{apply, Algorithm, Applied, Frame, JoinType};
+use super::algorithm::{apply, Algorithm, Applied, Bevel, Frame, JoinType};
 use super::edge::Edge;
 use super::face::Face;
 use super::shape::{Shape, ShapeKind};
@@ -236,7 +236,7 @@ impl SolidStruct for Solid {
 		if edges.is_empty() {
 			return Ok(self.clone_handle());
 		}
-		self.derived(Algorithm::Fillet { shape: &self.shape, edges: &edges, radius }, |message| Error::Fillet(format!("radius={radius} does not fit the local geometry on {} edge(s): {message}", edges.len())))
+		self.derived(Algorithm::Fillet { shape: &self.shape, edges: &edges, radius, law: &[] }, |message| Error::Fillet(format!("radius={radius} does not fit the local geometry on {} edge(s): {message}", edges.len())))
 	}
 
 	fn chamfer_edges<'a>(&self, distance: f64, edges: impl IntoIterator<Item = &'a Edge>) -> Result<Self, Error> {
@@ -244,7 +244,7 @@ impl SolidStruct for Solid {
 		if edges.is_empty() {
 			return Ok(self.clone_handle());
 		}
-		self.derived(Algorithm::Chamfer { shape: &self.shape, edges: &edges, distance }, |message| Error::Chamfer(format!("distance={distance} does not fit the local geometry on {} edge(s): {message}", edges.len())))
+		self.derived(Algorithm::Chamfer { shape: &self.shape, edges: &edges, references: &[], bevel: Bevel::Symmetric { distance } }, |message| Error::Chamfer(format!("distance={distance} does not fit the local geometry on {} edge(s): {message}", edges.len())))
 	}
 
 	// ==================== Sweep ====================

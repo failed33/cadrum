@@ -55,12 +55,13 @@
 //! | `Splitter` | `BRepAlgoAPI_Splitter` | arguments, tools | -- |
 //! | `Section` | `BRepAlgoAPI_Section` | arguments, tools | -- |
 //! | `Cells` | `BOPAlgo_CellsBuilder` | shapes | a DNF over them |
-//! | `Fillet` | `BRepFilletAPI_MakeFillet` | a shape, edges | radius |
-//! | `Chamfer` | `BRepFilletAPI_MakeChamfer` | a shape, edges | distance |
+//! | `Fillet` | `BRepFilletAPI_MakeFillet` | a shape, edges | radius, radius law |
+//! | `Chamfer` | `BRepFilletAPI_MakeChamfer` | a shape, edges, a reference face per edge | [`Bevel`] |
 //! | `Transform` | `BRepBuilderAPI_GTransform` | a shape | a 3 by 4 affine matrix |
 //! | `DraftAngle` | `BRepOffsetAPI_DraftAngle` | a shape, faces | direction, angle, neutral plane |
 //! | `Projection` | `BRepProj_Projection` | a wire, a shape | direction |
 //! | `Unify` | `ShapeUpgrade_UnifySameDomain` | a shape | -- |
+//! | `Defeaturing` | `BRepAlgoAPI_Defeaturing` | a shape, faces | -- |
 //!
 //! `BRepFeat_*` is not a row: it lives in `TKFeat`, a toolkit the binding
 //! does not link.
@@ -174,12 +175,41 @@ pub enum Frame<'a> {
 	Auxiliary(&'a Shape),
 }
 
-/// One sample of a scale law along a sweep: the section is scaled by `scale`
-/// at normalised spine position `station`.
+/// One station of a law sampled along a spine or a fillet contour: `value` at
+/// normalised position `station`. A sweep reads it as the section's scale, a
+/// fillet as the radius; the shape of the sample is the same either way, so
+/// the rows share one type rather than restating it per law.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScaleSample {
+pub struct LawSample {
 	pub station: f64,
-	pub scale: f64,
+	pub value: f64,
+}
+
+/// How a [`Algorithm::Chamfer`] is measured at each of its edges.
+///
+/// Both asymmetric forms measure their first parameter ON a reference face,
+/// which is why the row takes one face per edge: OCCT needs to know which of
+/// the two faces the edge separates the distance is laid out over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Bevel {
+	/// One distance, the same on both faces; no reference face is read.
+	Symmetric { distance: f64 },
+	/// `distance` on the reference face, `second` on the other one.
+	Distances { distance: f64, second: f64 },
+	/// `distance` on the reference face, the bevel rising from it at `angle`
+	/// radians.
+	Angle { distance: f64, angle: f64 },
+}
+
+impl Bevel {
+	/// The row code and the one or two scalars the form carries.
+	fn wire(self) -> (i64, [f64; 2], usize) {
+		match self {
+			Bevel::Symmetric { distance } => (0, [distance, 0.0], 1),
+			Bevel::Distances { distance, second } => (1, [distance, second], 2),
+			Bevel::Angle { distance, angle } => (2, [distance, angle], 2),
+		}
+	}
 }
 
 /// What a [`Algorithm::Boolean`] computes between its argument group and its
@@ -249,7 +279,7 @@ pub enum Algorithm<'a> {
 		spine: &'a Shape,
 		sections: &'a [&'a Shape],
 		frame: Frame<'a>,
-		law: &'a [ScaleSample],
+		law: &'a [LawSample],
 		tolerance: Option<f64>,
 		solid: bool,
 	},
@@ -320,15 +350,23 @@ pub enum Algorithm<'a> {
 		shapes: &'a [&'a Shape],
 		clauses: &'a [i64],
 	},
+	/// `radius` at every station unless `law` is given, in which case the
+	/// radius is interpolated through its stations along each contour and
+	/// `radius` is unused.
 	Fillet {
 		shape: &'a Shape,
 		edges: &'a [&'a Edge],
 		radius: f64,
+		law: &'a [LawSample],
 	},
+	/// `references` holds one face per edge, in the order `edges` states
+	/// them, and is read only by the two asymmetric [`Bevel`] forms; the
+	/// symmetric form takes none.
 	Chamfer {
 		shape: &'a Shape,
 		edges: &'a [&'a Edge],
-		distance: f64,
+		references: &'a [&'a Face],
+		bevel: Bevel,
 	},
 	/// A row-major 3 by 4 affine map. Topology is rebuilt; the history maps
 	/// every face and edge onto its image.
@@ -353,6 +391,13 @@ pub enum Algorithm<'a> {
 	/// Faces and edges on the same geometry merged.
 	Unify {
 		shape: &'a Shape,
+	},
+	/// `faces` removed from `shape` and the gap healed by extending the faces
+	/// that adjoined them. The input is a solid, a compsolid or a compound of
+	/// solids, as the builder requires.
+	Defeaturing {
+		shape: &'a Shape,
+		faces: &'a [&'a Face],
 	},
 }
 
@@ -456,7 +501,7 @@ impl Algorithm<'_> {
 					Frame::Auxiliary(wire) => (3, DVec3::ZERO, Some(wire)),
 					Frame::CorrectedFrenet => (4, DVec3::ZERO, None),
 				};
-				Call::new(10).shape(spine).shapes(auxiliary.as_ref()).shapes(sections).integer(code).integer(i64::from(auxiliary.is_some())).count(sections.len()).count(law.len()).integer(i64::from(solid)).vec(up).scalar(tolerance.unwrap_or(f64::NAN)).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.scale))
+				Call::new(10).shape(spine).shapes(auxiliary.as_ref()).shapes(sections).integer(code).integer(i64::from(auxiliary.is_some())).count(sections.len()).count(law.len()).integer(i64::from(solid)).vec(up).scalar(tolerance.unwrap_or(f64::NAN)).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value))
 			}
 			Algorithm::ThruSections { sections, ruled, tolerance, solid } => Call::new(11).shapes(sections).integer(i64::from(ruled)).integer(i64::from(solid)).scalar(tolerance),
 			Algorithm::OffsetShape { shape, offset, tolerance, join, intersection } => Call::new(12).shape(shape).scalar(offset).scalar(tolerance).integer(join.code()).integer(i64::from(intersection)),
@@ -480,12 +525,16 @@ impl Algorithm<'_> {
 				call.integers.extend_from_slice(clauses);
 				call
 			}
-			Algorithm::Fillet { shape, edges, radius } => Call::new(22).shape(shape).edges(edges).scalar(radius),
-			Algorithm::Chamfer { shape, edges, distance } => Call::new(23).shape(shape).edges(edges).scalar(distance),
+			Algorithm::Fillet { shape, edges, radius, law } => Call::new(22).shape(shape).edges(edges).count(law.len()).scalar(radius).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value)),
+			Algorithm::Chamfer { shape, edges, references, bevel } => {
+				let (form, scalars, taken) = bevel.wire();
+				Call::new(23).shape(shape).edges(edges).faces(references).integer(form).count(edges.len()).scalars(scalars.into_iter().take(taken))
+			}
 			Algorithm::Transform { shape, matrix } => Call::new(24).shape(shape).scalars(matrix),
 			Algorithm::DraftAngle { shape, faces, direction, angle, plane_origin, plane_normal } => Call::new(25).shape(shape).faces(faces).vec(direction).scalar(angle).vec(plane_origin).vec(plane_normal),
 			Algorithm::Projection { wire, onto, direction } => Call::new(26).shape(wire).shape(onto).vec(direction),
 			Algorithm::Unify { shape } => Call::new(27).shape(shape),
+			Algorithm::Defeaturing { shape, faces } => Call::new(28).shape(shape).faces(faces),
 		}
 	}
 }

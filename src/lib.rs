@@ -11,7 +11,7 @@ pub mod occt;
 // pub mod pure;
 #[cfg(not(feature = "pure"))]
 pub use occt::{
-	algorithm::{apply, Algorithm, Applied, BooleanOperation, Continuity, Filling, Frame, JoinType, ScaleSample},
+	algorithm::{apply, Algorithm, Applied, Bevel, BooleanOperation, Continuity, Filling, Frame, JoinType, LawSample},
 	edge::Edge,
 	face::Face,
 	shape::{Shape, ShapeKind},

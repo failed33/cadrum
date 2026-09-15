@@ -29,6 +29,7 @@
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Trsf.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
@@ -64,6 +65,7 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSweep.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <BOPAlgo_Operation.hxx>
@@ -106,6 +108,7 @@
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <NCollection_Array1.hxx>
 #include <NCollection_Array2.hxx>
 #include <NCollection_HArray1.hxx>
 #include <Precision.hxx>
@@ -1253,6 +1256,7 @@ enum Row : uint32_t {
     ROW_DRAFT_ANGLE = 25,
     ROW_PROJECTION = 26,
     ROW_UNIFY = 27,
+    ROW_DEFEATURING = 28,
 };
 
 // The arguments of one call, read by position. Every accessor refuses a
@@ -1563,13 +1567,41 @@ Product row(Row row, const Call& call) {
             return product;
         }
         case ROW_FILLET: {
+            // integers: [station count]; scalars: [radius, stations..., radii...].
+            // With no station the radius is constant; with stations the builder
+            // interpolates them along the contour, each `(relative parameter in
+            // [0,1], radius)`.
             BRepFilletAPI_MakeFillet builder(call.shape(0));
-            for (size_t edge = 1; edge < call.shapes.size(); ++edge) builder.Add(call.scalar(0), TopoDS::Edge(call.shape(edge)));
+            const size_t stations = call.count(0);
+            std::vector<gp_Pnt2d> law;
+            law.reserve(stations);
+            for (size_t station = 0; station < stations; ++station) law.emplace_back(call.scalar(1 + station), call.scalar(1 + stations + station));
+            for (size_t edge = 1; edge < call.shapes.size(); ++edge) {
+                const TopoDS_Edge& contour = TopoDS::Edge(call.shape(edge));
+                if (law.empty()) {
+                    builder.Add(call.scalar(0), contour);
+                } else {
+                    builder.Add(NCollection_Array1<gp_Pnt2d>(law.front(), 1, static_cast<int>(law.size())), contour);
+                }
+            }
             return built(builder, call);
         }
         case ROW_CHAMFER: {
+            // integers: [form, edge count]; scalars: [distance] and, for the two
+            // asymmetric forms, the second distance or the angle. Those forms
+            // measure the distance ON a reference face, one per edge, which
+            // follows the edges in the shape vector.
             BRepFilletAPI_MakeChamfer builder(call.shape(0));
-            for (size_t edge = 1; edge < call.shapes.size(); ++edge) builder.Add(call.scalar(0), TopoDS::Edge(call.shape(edge)));
+            const size_t edges = call.count(1);
+            for (size_t edge = 0; edge < edges; ++edge) {
+                const TopoDS_Edge& contour = TopoDS::Edge(call.shape(1 + edge));
+                switch (call.integer(0)) {
+                    case 0: builder.Add(call.scalar(0), contour); break;
+                    case 1: builder.Add(call.scalar(0), call.scalar(1), contour, TopoDS::Face(call.shape(1 + edges + edge))); break;
+                    case 2: builder.AddDA(call.scalar(0), call.scalar(1), contour, TopoDS::Face(call.shape(1 + edges + edge))); break;
+                    default: throw std::invalid_argument("unknown chamfer form");
+                }
+            }
             return built(builder, call);
         }
         case ROW_TRANSFORM: {
@@ -1610,6 +1642,14 @@ Product row(Row row, const Call& call) {
             }
             return product;
         }
+        case ROW_DEFEATURING: {
+            BRepAlgoAPI_Defeaturing builder;
+            builder.SetShape(call.shape(0));
+            builder.AddFacesToRemove(call.list(1, call.shapes.size()));
+            builder.Build();
+            if (builder.HasErrors()) throw std::runtime_error("reported errors");
+            return done(builder, call);
+        }
     }
     throw std::invalid_argument("unknown algorithm row");
 }
@@ -1619,6 +1659,7 @@ const char* row_name(uint32_t code) {
         "box", "sphere", "cylinder", "cone", "torus", "half space", "wire", "face", "prism", "revolution",
         "pipe shell", "thru sections", "offset shape", "offset faces", "thick solid", "solid", "filling", "sew",
         "boolean", "splitter", "section", "cells", "fillet", "chamfer", "transform", "draft angle", "projection", "unify",
+        "defeaturing",
     };
     return code < sizeof(names) / sizeof(names[0]) ? names[code] : "unknown";
 }
