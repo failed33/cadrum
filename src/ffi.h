@@ -283,6 +283,45 @@ bool face_project_point(const TopoDS_Face& face,
 
 } // namespace cadrum
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <csetjmp>
+
+namespace cadrum {
+
+// The bridge call live on this thread: where a fault raised inside an OCCT
+// algorithm returns (see the signal translation in ffi.cpp).
+sigjmp_buf*& fault_return();
+const char* fault_message(int signal_number);
+
+} // namespace cadrum
+
+namespace rust {
+namespace behavior {
+
+// A fault inside `func` comes back through `fault_return()` as the call's error, skipping the OCCT
+// frames a throw cannot unwind (the prebuilt has no exception tables over its faulting instructions).
+template <typename Try, typename Fail>
+static void trycatch(Try&& func, Fail&& fail) noexcept {
+    sigjmp_buf here;
+    sigjmp_buf* const outer = cadrum::fault_return();
+    cadrum::fault_return() = &here;
+    if (int signal_number = sigsetjmp(here, 1)) {
+        cadrum::fault_return() = outer;
+        fail(cadrum::fault_message(signal_number));
+        return;
+    }
+    try {
+        func();
+    } catch (const std::exception& error) {
+        fail(error.what());
+    }
+    cadrum::fault_return() = outer;
+}
+
+} // namespace behavior
+} // namespace rust
+#endif
+
 #ifdef FEATURE_COLOR
 
 namespace cadrum {

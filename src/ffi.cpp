@@ -164,28 +164,57 @@ namespace cadrum {
 // into a `Standard_Failure`-derived exception — but `OSD_signal.cxx` is one of
 // the POSIX sources `build.rs` body-stubs, so in the linked library
 // `OSD::SetSignal` is a bare `ret` and installs nothing. The translation is
-// therefore installed here, throwing the same exception types OCCT's own
-// handler throws, so a catch block below sees the failure it already expects.
+// therefore installed here. Outside a bridge call it throws the same exception
+// types OCCT's own handler throws, so a catch block sees the failure it
+// already expects.
 //
-// Its reach is bounded, and the bound is not a detail: throwing out of a signal
-// frame is undefined in C++ and arrives at a catch only where every frame
-// between the faulting instruction and that catch is unwindable and not
-// `noexcept`. A fault inside a `noexcept` member of the standard library (a
-// destructor, `vector::operator[]`) or inside an assembly leaf carrying no
-// unwind information still terminates the process. What is covered is a fault
-// OCCT raises from its own algorithm frames, not every fault reachable from a
-// binding below.
+// A throw out of a signal frame arrives at a catch only where every frame
+// between the faulting instruction and that catch is unwindable. A `noexcept`
+// member of the standard library, an assembly leaf, or -- on GCC targets, the
+// prebuilt OCCT throughout -- a function compiled without exception tables over
+// its faulting instructions terminates the process instead. So inside a bridge
+// call the handler does not throw: it returns to the call's fault return
+// (ffi.h), which reports the fault as that call's error. The throw remains for
+// a fault outside every bridge call.
 //
 // Dispositions set by `sigaction` are process-wide and shared by every thread,
 // so one installation covers callers that evaluate off the main thread; the
 // per-thread part of OCCT's setup (`OSD::SetThreadLocalSignal`) only arms
 // floating-point traps, which stay disarmed here as `OSD::SetSignal(false)`
 // leaves them.
+#if defined(__unix__) || defined(__APPLE__)
+
+sigjmp_buf*& fault_return() {
+    thread_local sigjmp_buf* live = nullptr;
+    return live;
+}
+
+// Names the signal actually caught: a report that renames a bus error as a
+// segmentation fault sends the reader after the wrong cause.
+const char* fault_message(int signal_number) {
+    switch (signal_number) {
+        case SIGFPE:
+            return "SIGFPE raised inside an OCCT algorithm";
+        case SIGBUS:
+            return "SIGBUS raised inside an OCCT algorithm";
+        case SIGSEGV:
+            return "SIGSEGV raised inside an OCCT algorithm";
+        default:
+            return "a fault signal raised inside an OCCT algorithm";
+    }
+}
+
+#endif
+
 namespace {
 
 #if defined(__unix__) || defined(__APPLE__)
 
 extern "C" void raise_signal_as_failure(int signal_number, siginfo_t*, void*) {
+    // `sigsetjmp(here, 1)` saved the mask with the signal unblocked, and
+    // `siglongjmp` restores it, so the jump leaves no `sigreturn` behind.
+    if (sigjmp_buf* here = fault_return()) siglongjmp(*here, signal_number);
+
     // The signal is blocked for the duration of its own handler, and throwing
     // out of the handler skips the `sigreturn` that would restore the mask.
     sigset_t raised;
@@ -193,19 +222,8 @@ extern "C" void raise_signal_as_failure(int signal_number, siginfo_t*, void*) {
     sigaddset(&raised, signal_number);
     pthread_sigmask(SIG_UNBLOCK, &raised, nullptr);
 
-    // The message names the signal actually caught: a bus error and a
-    // segmentation fault are different faults, and a report that renames one
-    // as the other sends the reader after the wrong cause.
-    switch (signal_number) {
-        case SIGFPE:
-            throw Standard_NumericError("SIGFPE raised inside an OCCT algorithm");
-        case SIGBUS:
-            throw OSD_Exception_ACCESS_VIOLATION("SIGBUS raised inside an OCCT algorithm");
-        case SIGSEGV:
-            throw OSD_Exception_ACCESS_VIOLATION("SIGSEGV raised inside an OCCT algorithm");
-        default:
-            throw OSD_Exception_ACCESS_VIOLATION("a fault signal raised inside an OCCT algorithm");
-    }
+    if (signal_number == SIGFPE) throw Standard_NumericError(fault_message(signal_number));
+    throw OSD_Exception_ACCESS_VIOLATION(fault_message(signal_number));
 }
 
 void install_signal_translation() {
@@ -1222,10 +1240,6 @@ static GeomAbs_Shape continuity_order(uint32_t continuity, const std::string& wh
 
 namespace {
 
-// `BRepOffsetAPI_ThruSections` keeps global state; two concurrent lofts
-// corrupt the heap, so that row runs under this lock.
-std::mutex loft_lock;
-
 // Row codes, mirrored by `Algorithm::code` in `src/occt/algorithm.rs`.
 enum Row : uint32_t {
     ROW_BOX = 0,
@@ -1676,8 +1690,6 @@ std::unique_ptr<TopoDS_Shape> apply_algorithm(
 {
     const std::string name(row_name(algorithm));
     try {
-        std::unique_lock<std::mutex> loft_guard(loft_lock, std::defer_lock);
-        if (algorithm == ROW_THRU_SECTIONS) loft_guard.lock();
         Product product = row(static_cast<Row>(algorithm), Call{shapes, scalars, integers});
         std::set<std::pair<uint64_t, uint64_t>> seen;
         for (const auto& pair : product.relay) {

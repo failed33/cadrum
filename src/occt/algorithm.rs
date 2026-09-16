@@ -72,6 +72,11 @@ use super::ffi;
 use super::shape::Shape;
 use crate::common::error::Error;
 use glam::DVec3;
+use std::sync::{Mutex, PoisonError};
+
+/// `BRepOffsetAPI_ThruSections` keeps global state and two concurrent lofts corrupt the heap. The lock
+/// is held below the bridge, so a fault returned through it (ffi.h) releases the lock with the frame.
+static LOFT: Mutex<()> = Mutex::new(());
 
 /// Corner treatment where offset faces no longer meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,6 +547,7 @@ impl Algorithm<'_> {
 /// Run one row. Failure is [`Error::Algorithm`] carrying the row's name and
 /// OCCT's reason; a null result never comes back.
 pub fn apply(algorithm: Algorithm<'_>) -> Result<Applied, Error> {
+	let _serialised = matches!(algorithm, Algorithm::ThruSections { .. }).then(|| LOFT.lock().unwrap_or_else(PoisonError::into_inner));
 	let call = algorithm.call();
 	let mut history = Vec::new();
 	let mut ends = ffi::shape_vec_new();
