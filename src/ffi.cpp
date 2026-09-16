@@ -505,23 +505,30 @@ uint32_t shape_kind(const TopoDS_Shape& shape) {
     }
 }
 
-double shape_volume(const TopoDS_Shape& shape) {
+// Adaptive integration: the fixed-order rule under-integrates a face whose
+// surface has more knot spans than the rule has points (a loft, ~20% low).
+constexpr double MASS_PROPERTY_EPS = 1.0e-6;
+
+static GProp_GProps volume_properties(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props);
-    return props.Mass();
+    BRepGProp::VolumeProperties(shape, props, MASS_PROPERTY_EPS);
+    return props;
+}
+
+double shape_volume(const TopoDS_Shape& shape) {
+    return volume_properties(shape).Mass();
 }
 
 double shape_surface_area(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    BRepGProp::SurfaceProperties(shape, props);
+    BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS);
     return props.Mass();
 }
 
 void shape_center_of_mass(const TopoDS_Shape& shape,
     double& x, double& y, double& z)
 {
-    GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props);
+    GProp_GProps props = volume_properties(shape);
     gp_Pnt com = props.CentreOfMass();
     x = com.X(); y = com.Y(); z = com.Z();
 }
@@ -536,8 +543,7 @@ void shape_inertia_tensor(const TopoDS_Shape& shape,
     // can aggregate by plain matrix sum (parallel-axis theorem is already
     // folded in). Shift here with I_world = I_com + m·(|d|² I - d⊗d),
     // where d = COM vector from world origin, m = volume (uniform density).
-    GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props);
+    GProp_GProps props = volume_properties(shape);
     gp_Mat ic = props.MatrixOfInertia();
     gp_Pnt com = props.CentreOfMass();
     double mass = props.Mass();
@@ -607,22 +613,10 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         TopoDS_Face face = TopoDS::Face(explorer.Current());
         TopLoc_Location location;
         Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, location);
-        // Consolidate singular surface nodes and discard collapsed facets using
-        // OCCT's mesh algorithm. Reserve its displacement in the chord budget;
-        // the analytic face and its stored triangulation remain untouched.
-        if (!relative && !triangulation.IsNull()) {
-            Poly_MergeNodesTool merger(std::acos(-1.0), merge_tolerance);
-            merger.SetMergeOpposite(true);
-            merger.AddTriangulation(triangulation);
-            triangulation = merger.Result();
-        }
-
         // Nodal normals, taken from the underlying surface (GeomLib::NormEstim at
         // each UV node) rather than averaged from the triangles, so curved faces
-        // carry their exact normal. OCCT falls back to averaging adjacent triangle
-        // normals at singular nodes (cone apex, sphere pole) and on faces without
-        // UV nodes. NOT Poly_Triangulation::ComputeNormals, which only averages
-        // triangle normals and would throw the surface away.
+        // carry their exact normal. NOT Poly_Triangulation::ComputeNormals, which
+        // only averages triangle normals and would throw the surface away.
         //
         // Safe on a null handle, and every other path allocates the array, so the
         // guard below rejects exactly the faces with nothing to emit: no
@@ -630,6 +624,31 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         BRepLib_ToolTriangulatedShape::ComputeNormals(face, triangulation);
         if (triangulation.IsNull() || !triangulation->HasNormals()) {
             return result;
+        }
+
+        // Consolidate singular surface nodes and discard collapsed facets using
+        // OCCT's mesh algorithm. Reserve its displacement in the chord budget;
+        // the analytic face and its stored triangulation remain untouched. The
+        // merge keeps neither UV nodes nor normals, so each node's surface normal
+        // is carried across by the element that placed it.
+        if (!relative) {
+            Poly_MergeNodesTool merger(std::acos(-1.0), merge_tolerance, triangulation->NbTriangles());
+            merger.SetMergeOpposite(true);
+            std::vector<gp_Dir> normals;
+            for (int i = 1; i <= triangulation->NbTriangles(); ++i) {
+                int corner[3];
+                triangulation->Triangle(i).Get(corner[0], corner[1], corner[2]);
+                for (int k = 0; k < 3; ++k) merger.ChangeElementNode(k) = triangulation->Node(corner[k]).XYZ();
+                merger.PushLastTriangle();
+                for (int k = 0; k < 3; ++k) {
+                    const size_t merged = static_cast<size_t>(merger.ElementNodeIndex(k));
+                    if (merged >= normals.size()) normals.resize(merged + 1, gp::DZ());
+                    normals[merged] = triangulation->Normal(corner[k]);
+                }
+            }
+            triangulation = merger.Result();
+            triangulation->AddNormals();
+            for (size_t i = 0; i < normals.size(); ++i) triangulation->SetNormal(static_cast<int>(i) + 1, normals[i]);
         }
 
         int nb_nodes = triangulation->NbNodes();

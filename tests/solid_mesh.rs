@@ -88,9 +88,10 @@ mod svg {
 		write("svg_has_hidden_lines", &svg);
 	}
 
-	/// 球を+Xから描画したSVGと、Z軸180°回転後に+Xから描画したSVGで
+	/// 球を−Xから描画したSVGと、Y軸180°回転後に+Xから描画したSVGで
 	/// polygon(面)の数が10%以上変わらないことを検証する。
-	/// 対称な球なので見え方はほぼ同じはず。
+	/// 回転が mesh の位置と法線の両方に掛かっていれば同じ半球が見える
+	/// (球の三角形分割は縫い目側の半球が密なので、半球を跨いで比べない)。
 	#[test]
 	fn rotated_sphere_face_count_stable() {
 		fn count_polygons(svg: &str) -> usize {
@@ -98,7 +99,7 @@ mod svg {
 		}
 
 		let shape = [Solid::sphere(5.0)];
-		let svg_a = svg_string(&shape, DVec3::X, 0.1);
+		let svg_a = svg_string(&shape, -DVec3::X, 0.1);
 		let count_a = count_polygons(&svg_a);
 
 		let rotated = shape.map(|s| s.rotate_y(std::f64::consts::PI));

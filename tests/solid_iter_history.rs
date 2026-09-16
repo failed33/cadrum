@@ -1,8 +1,9 @@
 //! `Solid::iter_history` population tests (#156).
 //!
-//! history は「派生系譜」: 結果に生き残った各 face を同種(face)の元 face に
+//! history は「派生系譜」: 結果に生き残った各 face / edge を同種の元要素に
 //! 対応付けた flat `[post_id, src_id]` 列。identity(pass-through) ∪ Modified を
-//! 含み、Generated(edge→face の新規面) は含まない。詳細は
+//! 含み、Generated(edge→face の新規面) は含まない。face と edge は同じ列に
+//! 混在するので、面の系譜は結果の face id で絞る。詳細は
 //! notes/20260603-history定義の明確化.md を参照。
 
 use cadrum::{DVec3, Edge, ProfileOrient, Solid};
@@ -12,6 +13,12 @@ use std::f64::consts::TAU;
 /// 一辺 `side` の閉じた正方形プロファイル（extrude 用）。
 fn square(side: f64) -> Vec<Edge> {
 	Edge::polygon(&[DVec3::new(0.0, 0.0, 0.0), DVec3::new(side, 0.0, 0.0), DVec3::new(side, side, 0.0), DVec3::new(0.0, side, 0.0)]).expect("square polygon")
+}
+
+/// `solid` の history のうち、結果の face を post とする対。
+fn face_history(solid: &Solid) -> Vec<[u64; 2]> {
+	let faces: HashSet<u64> = solid.iter_face().map(|f| f.id()).collect();
+	solid.iter_history().filter(|[post, _]| faces.contains(post)).collect()
 }
 
 /// 入力に face を持たない演算（プリミティブ / edge・grid ソースの builder）は
@@ -55,7 +62,7 @@ fn test_shell_history_maps_five_retained_faces() {
 	let top_id = top.id();
 	let shelled = cube.shell(-1.0, [top]).expect("shell");
 
-	let hist: Vec<[u64; 2]> = shelled.iter_history().collect();
+	let hist = face_history(&shelled);
 	assert!(!hist.is_empty(), "shell must populate history");
 	for [_, src] in &hist {
 		assert!(original.contains(src), "src {src} is not an original cube face");
@@ -78,7 +85,7 @@ fn test_fillet_history_modifies_adjacent_identity_elsewhere() {
 	assert_eq!(adjacent.len(), 2, "a cube edge borders exactly 2 faces");
 
 	let filleted = cube.fillet_edges(0.5, [edge]).expect("fillet");
-	let hist: Vec<[u64; 2]> = filleted.iter_history().collect();
+	let hist = face_history(&filleted);
 
 	for [_, src] in &hist {
 		assert!(original.contains(src), "src {src} is not an original cube face");
@@ -103,7 +110,7 @@ fn test_chamfer_history_modifies_adjacent_identity_elsewhere() {
 	assert_eq!(adjacent.len(), 2, "a cube edge borders exactly 2 faces");
 
 	let chamfered = cube.chamfer_edges(0.5, [edge]).expect("chamfer");
-	let hist: Vec<[u64; 2]> = chamfered.iter_history().collect();
+	let hist = face_history(&chamfered);
 
 	for [_, src] in &hist {
 		assert!(original.contains(src), "src {src} is not an original cube face");
@@ -132,7 +139,7 @@ fn test_fillet_carries_face_color_via_history() {
 	let edge = cube.iter_edge().next().expect("cube has edges");
 	let filleted = cube.fillet_edges(0.5, [edge]).expect("fillet");
 
-	let hist: Vec<[u64; 2]> = filleted.iter_history().collect();
+	let hist = face_history(&filleted);
 	assert!(!hist.is_empty(), "fillet must populate history");
 	for [post, _] in &hist {
 		assert!(filleted.colormap().contains_key(post), "face {post} should inherit color via history");
