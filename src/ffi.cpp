@@ -69,7 +69,6 @@ static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch 
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSweep.hxx>
-#include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepAlgoAPI_Section.hxx>
@@ -79,6 +78,7 @@ static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch 
 
 // --- Boolean operations & shape cleanup ---
 #include <BOPAlgo_CellsBuilder.hxx>
+#include <cassert>
 #include <ShapeAnalysis_FreeBounds.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepTools_History.hxx>
@@ -1215,10 +1215,9 @@ enum Row : uint32_t {
     ROW_SOLID = 15,
     ROW_FILLING = 16,
     ROW_SEW = 17,
-    ROW_BOOLEAN = 18,
     ROW_SPLITTER = 19,
     ROW_SECTION = 20,
-    ROW_CELLS = 21,
+    ROW_BOOLEAN = 21,
     ROW_FILLET = 22,
     ROW_CHAMFER = 23,
     ROW_TRANSFORM = 24,
@@ -1323,6 +1322,64 @@ Product boolean_row(Builder& builder, const Call& call, size_t arguments) {
     if (builder.HasErrors()) throw std::runtime_error("reported errors");
     return done(builder, call);
 }
+
+// OCCT owns the split-cell membership; the expression only selects those cells.
+class ExpressionCells : public BOPAlgo_CellsBuilder {
+    static bool selected(const Call& call, const NCollection_List<TopoDS_Shape>& sources) {
+        std::vector<bool> stack;
+        for (const auto instruction : call.integers) {
+            if (instruction > 0) {
+                const auto& operand = call.shape(static_cast<size_t>(instruction - 1));
+                bool present = false;
+                for (const auto& source : sources) present = present || source.IsSame(operand);
+                stack.push_back(present);
+            } else {
+                assert(stack.size() >= 2);
+                const bool right = stack.back(); stack.pop_back();
+                const bool left = stack.back(); stack.pop_back();
+                switch (instruction) {
+                    case -1: stack.push_back(left || right); break;
+                    case -2: stack.push_back(left && !right); break;
+                    case -3: stack.push_back(left && right); break;
+                    default: throw std::invalid_argument("unknown expression instruction");
+                }
+            }
+        }
+        assert(stack.size() <= 1);
+        return !stack.empty() && stack.back();
+    }
+public:
+    void Evaluate(const Call& call) {
+        NCollection_List<TopoDS_Shape> arguments;
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> unique;
+        for (const auto& shape : call.shapes) if (unique.Add(shape)) arguments.Append(shape);
+        TopoDS_Compound result;
+        BRep_Builder topology;
+        topology.MakeCompound(result);
+        myShape = result;
+        if (arguments.IsEmpty()) return;
+        if (arguments.Size() == 1) {
+            if (selected(call, arguments)) topology.Add(myShape, arguments.First());
+            return;
+        }
+        SetArguments(arguments);
+        Perform();
+        if (HasErrors()) throw std::runtime_error("reported errors");
+        topology.MakeCompound(result);
+        NCollection_List<TopoDS_Shape> material;
+        for (int index = 1; index <= myIndex.Extent(); ++index) {
+            if (!selected(call, myIndex.FindFromIndex(index))) continue;
+            const auto& part = myIndex.FindKey(index);
+            topology.Add(result, part);
+            material.Append(part);
+            myShapeMaterial.Bind(part, 1);
+        }
+        myShape = result;
+        myMaterials.Bind(1, material);
+        RemoveInternalBoundaries();
+        PrepareHistory(Message_ProgressRange());
+    }
+};
 
 Product row(Row row, const Call& call) {
     switch (row) {
@@ -1503,16 +1560,6 @@ Product row(Row row, const Call& call) {
             }
             return product;
         }
-        case ROW_BOOLEAN: {
-            BRepAlgoAPI_BooleanOperation builder;
-            switch (call.integer(0)) {
-                case 0: builder.SetOperation(BOPAlgo_FUSE); break;
-                case 1: builder.SetOperation(BOPAlgo_CUT); break;
-                case 2: builder.SetOperation(BOPAlgo_COMMON); break;
-                default: throw std::invalid_argument("unknown boolean operation");
-            }
-            return boolean_row(builder, call, call.count(1));
-        }
         case ROW_SPLITTER: {
             BRepAlgoAPI_Splitter builder;
             return boolean_row(builder, call, call.count(0));
@@ -1521,32 +1568,9 @@ Product row(Row row, const Call& call) {
             BRepAlgoAPI_Section builder;
             return boolean_row(builder, call, call.count(0));
         }
-        case ROW_CELLS: {
-            // integers: the DIMACS-flat DNF (`+i` takes shape i-1, `-i` avoids
-            // it, `0` ends a clause). A lone shape taken whole is copied, which
-            // is what the cells builder would return for it.
-            if (call.shapes.size() == 1 && call.integers.size() == 2 && call.integer(0) == 1 && call.integer(1) == 0) {
-                BRepBuilderAPI_Copy copier(call.shape(0), true, false);
-                Product product{copier.Shape(), {}, {}};
-                relay_from_copy(copier, call.shape(0), product.relay);
-                return product;
-            }
-            BOPAlgo_CellsBuilder cells;
-            cells.SetArguments(call.list(0, call.shapes.size()));
-            cells.Perform();
-            if (cells.HasErrors()) throw std::runtime_error("reported errors");
-            NCollection_List<TopoDS_Shape> take, avoid;
-            for (const int64_t literal : call.integers) {
-                if (literal == 0) {
-                    if (!take.IsEmpty()) cells.AddToResult(take, avoid, 1);
-                    take.Clear();
-                    avoid.Clear();
-                    continue;
-                }
-                const TopoDS_Shape& shape = call.shape(static_cast<size_t>(std::llabs(literal)) - 1);
-                (literal > 0 ? take : avoid).Append(shape);
-            }
-            cells.RemoveInternalBoundaries();
+        case ROW_BOOLEAN: {
+            ExpressionCells cells;
+            cells.Evaluate(call);
             // The result shares no geometry with its inputs: the copy severs
             // it, and its own history composes with the builder's.
             ShapeRelay built_relay;
@@ -1653,7 +1677,7 @@ const char* row_name(uint32_t code) {
     static const char* const names[] = {
         "box", "sphere", "cylinder", "cone", "torus", "half space", "wire", "face", "prism", "revolution",
         "pipe shell", "thru sections", "offset shape", "offset faces", "thick solid", "solid", "filling", "sew",
-        "boolean", "splitter", "section", "cells", "fillet", "chamfer", "transform", "draft angle", "projection", "unify",
+        "unused", "splitter", "section", "boolean", "fillet", "chamfer", "transform", "draft angle", "projection", "unify",
         "defeaturing",
     };
     return code < sizeof(names) / sizeof(names[0]) ? names[code] : "unknown";

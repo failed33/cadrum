@@ -1,8 +1,4 @@
-//! `Boolean<Solid>` 演算子 (`+`/`-`/`*`)・`Sum`/`Product` 集約・`boolean_build`
-//! (BOPAlgo_CellsBuilder) の end-to-end 動作を検証する。
-//!
-//! 式の正確な DNF 表現は内部実装詳細なので、ここでは「体積」と「結果 Solid 数」
-//! というブラックボックス的不変量で検証する。
+//! Native expression evaluation: set algebra, grouping, pieces and history.
 
 use cadrum::{Boolean, DVec3, Solid};
 
@@ -78,7 +74,6 @@ fn test_intersect_two_cubes() {
 #[test]
 fn test_intersect_sphere_with_multiple_cylinders() {
 	// 球と 3 本円柱の intersect: sphere ∩ cyl_x ∩ cyl_y ∩ cyl_z
-	// DNF: [1, 2, 3, 4, 0] (1 clause、4 lit すべて take)
 	let sphere = Solid::sphere(5.0);
 	let r = 0.8;
 	let len = 20.0;
@@ -97,7 +92,6 @@ fn test_intersect_sphere_with_multiple_cylinders() {
 #[test]
 fn test_subtract_sphere_with_multiple_holes() {
 	// 球から X/Y/Z 軸の 3 本円柱を一括差し引く: sphere - (hole_x ∪ hole_y ∪ hole_z)
-	// DNF: sphere ∩ ¬hole_x ∩ ¬hole_y ∩ ¬hole_z = [1, -2, -3, -4, 0]
 	let sphere = Solid::sphere(5.0);
 	let len = 12.0;
 	let half = len / 2.0;
@@ -158,15 +152,12 @@ fn test_empty_returns_error() {
 
 #[test]
 fn test_build_direct() {
-	// Solid::boolean_build を直接呼ぶ低レベルテスト。
+	// Nested expression through the same evaluator as the algorithm table.
 	// (A + B) - C で `A=cube@0, B=cube@5, C=cube@2` を計算。
 	let a = Solid::cube(DVec3::ZERO, DVec3::splat(10.0));
 	let b = Solid::cube(DVec3::ZERO, DVec3::splat(10.0)).translate(DVec3::new(5.0, 0.0, 0.0));
 	let c = Solid::cube(DVec3::ZERO, DVec3::splat(10.0)).translate(DVec3::new(2.0, 0.0, 0.0));
-	let solids = vec![a, b, c];
-	// (A∪B)∖C → DNF: A∖C ∪ B∖C → clauses [1,-3,0, 2,-3,0]
-	let clauses = vec![1, -3, 0, 2, -3, 0];
-	let v = Solid::boolean(solids.iter(), clauses).build_vec().unwrap();
+	let v = ((&a + &b) - &c).build_vec().expect("grouped expression");
 	// A∪B の体積は 15×10×10 = 1500、C を引くので減るはず
 	let total_volume: f64 = v.iter().map(|s| s.volume().expect("volume integration")).sum();
 	assert!(total_volume < 1500.0);
@@ -186,4 +177,28 @@ fn test_preserves_src_face_identity() {
 	let half: Solid = (&torus * &cutter).build().unwrap();
 	let matched: Vec<u64> = half.iter_history().filter_map(|[p, s]| cutter_ids.contains(&s).then_some(p)).collect();
 	assert!(!matched.is_empty(), "history must contain at least one face sourced from cutter");
+}
+
+#[test]
+fn repeated_operands_and_empty_expressions_obey_set_identities() {
+	let a = cube(2.0, 2.0, 2.0, 0.0, 0.0, 0.0);
+	let faces: std::collections::HashSet<_> = a.iter_face().map(|face| face.id()).collect();
+	for expression in [&a + &a, &a * &a, Boolean::from(&a) + Boolean::default()] {
+		let result = expression.build().expect("same solid");
+		assert!((result.volume().expect("volume") - 8.0).abs() < 1e-8);
+		assert!(result.iter_history().any(|[_, source]| faces.contains(&source)));
+	}
+	assert!((&a - &a).build_vec().expect("empty difference").is_empty());
+	assert!(Boolean::<Solid>::default().build_vec().expect("empty expression").is_empty());
+}
+
+#[test]
+fn nested_difference_preserves_grouping_and_disconnected_pieces() {
+	let target = cube(10.0, 1.0, 1.0, 0.0, 0.0, 0.0);
+	let tool = cube(8.0, 1.0, 1.0, 1.0, 0.0, 0.0);
+	let island = cube(2.0, 1.0, 1.0, 4.0, 0.0, 0.0);
+	let result = (&target - (&tool - &island)).build_vec().expect("nested difference");
+	assert_eq!(result.len(), 3);
+	let volume = result.iter().map(Solid::volume).sum::<Result<f64, _>>().expect("volume");
+	assert!((volume - 4.0).abs() < 1e-8);
 }

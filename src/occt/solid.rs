@@ -11,6 +11,7 @@ use crate::common::boolean::Boolean;
 use crate::common::error::Error;
 use crate::traits::{ProfileOrient, SolidStruct, Transform};
 use glam::DVec3;
+use std::sync::Arc;
 
 /// A single solid: a [`Shape`] whose kind is `TopAbs_SOLID`.
 pub struct Solid {
@@ -24,13 +25,13 @@ pub struct Solid {
 	/// descendant for a modified one. Empty for constructors and I/O reads,
 	/// and after a rebuild (scale/mirror/Clone) that leaves no descendant to
 	/// name; preserved across translate/rotate/color.
-	history: Vec<[u64; 2]>,
+	history: Arc<[[u64; 2]]>,
 }
 
 impl Solid {
 	/// Wrap a carrier that holds a solid. A null carrier is tolerated for
 	/// the sake of `is_null`.
-	pub(crate) fn new(shape: Shape, #[cfg(feature = "color")] colormap: std::collections::HashMap<u64, crate::common::color::Color>, history: Vec<[u64; 2]>) -> Self {
+	pub(crate) fn new(shape: Shape, #[cfg(feature = "color")] colormap: std::collections::HashMap<u64, crate::common::color::Color>, history: Arc<[[u64; 2]]>) -> Self {
 		debug_assert!(matches!(shape.kind(), ShapeKind::Null | ShapeKind::Solid), "Solid::new called with a non-SOLID shape");
 		Solid {
 			shape,
@@ -76,7 +77,7 @@ impl Solid {
 			shape,
 			#[cfg(feature = "color")]
 			colormap,
-			history,
+			history.into(),
 		))
 	}
 
@@ -354,23 +355,17 @@ impl SolidStruct for Solid {
 
 	// ==================== Boolean primitive ====================
 
-	fn boolean<'a>(solids: impl IntoIterator<Item = &'a Self>, clauses: impl IntoIterator<Item = i64>) -> Boolean<Self>
-	where
-		Self: 'a,
-	{
-		// Shallow clones share the TShape, so the history the cells row
-		// reports names the faces the caller holds.
-		Boolean::from_parts(solids.into_iter().map(Solid::clone_handle).collect(), clauses.into_iter().collect())
+	fn boolean_operand(&self) -> Self {
+		self.clone_handle()
 	}
 
 	fn boolean_build(b: &Boolean<Self>) -> Result<Vec<Self>, Error> {
-		let (solids, clauses) = (b.solids(), b.clauses());
-		if solids.is_empty() || clauses.is_empty() {
-			return Err(Error::NotOne(0));
+		let solids = b.expression.operands();
+		if solids.is_empty() {
+			return Ok(Vec::new());
 		}
-		debug_assert!(clauses.last() == Some(&0), "clauses must be 0-terminated");
-		let shapes: Vec<&Shape> = solids.iter().map(Solid::as_shape).collect();
-		let Applied { shape, history, .. } = apply(Algorithm::Cells { shapes: &shapes, clauses }).map_err(|_| Error::Boolean)?;
+		let expression = b.expression.map(Solid::as_shape);
+		let Applied { shape, history, .. } = apply(Algorithm::Boolean { expression: &expression })?;
 
 		#[cfg(feature = "color")]
 		let colormap: std::collections::HashMap<u64, crate::common::color::Color> = history.iter().filter_map(|[post, source]| solids.iter().find_map(|solid| solid.colormap.get(source)).map(|&color| (*post, color))).collect();
@@ -379,8 +374,7 @@ impl SolidStruct for Solid {
 		#[cfg(feature = "color")]
 		let solid_color = solids[0].colormap.get(&solids[0].id()).copied();
 
-		// Every result solid receives the whole history: over-inclusion is
-		// harmless because consumers filter pairs by the source they hold.
+		let history: Arc<[[u64; 2]]> = history.into();
 		#[cfg_attr(not(feature = "color"), allow(unused_mut))]
 		let mut out: Vec<Solid> = shape
 			.components(ShapeKind::Solid)

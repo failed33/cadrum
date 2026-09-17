@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+pub use boolean_expression::{Expression, Instruction, Operation as BooleanOperation};
+
 pub mod common;
 #[cfg(not(feature = "pure"))]
 pub mod occt;
@@ -11,7 +13,7 @@ pub mod occt;
 // pub mod pure;
 #[cfg(not(feature = "pure"))]
 pub use occt::{
-	algorithm::{apply, Algorithm, Applied, Bevel, BooleanOperation, Continuity, Filling, Frame, JoinType, LawSample},
+	algorithm::{apply, Algorithm, Applied, Bevel, Continuity, Filling, Frame, JoinType, LawSample},
 	edge::Edge,
 	face::Face,
 	shape::{Shape, ShapeKind},
@@ -226,8 +228,8 @@ impl Solid {
 	pub fn bspline(u: usize, v: usize, u_periodic: bool, point: impl Fn(usize, usize) -> DVec3) -> Result<crate::Solid, Error> {
 		<Self as crate::traits::SolidStruct>::bspline(u, v, u_periodic, point)
 	}
-	pub fn boolean<'a>(solids: impl IntoIterator<Item = &'a crate::Solid>, clauses: impl IntoIterator<Item = i64>) -> Boolean<crate::Solid> {
-		<Self as crate::traits::SolidStruct>::boolean(solids, clauses)
+	pub fn boolean_operand(&self) -> crate::Solid {
+		<Self as crate::traits::SolidStruct>::boolean_operand(self)
 	}
 	pub fn boolean_build(b: &Boolean<crate::Solid>) -> Result<Vec<crate::Solid>, Error> {
 		<Self as crate::traits::SolidStruct>::boolean_build(b)

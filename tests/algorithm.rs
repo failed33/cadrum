@@ -166,8 +166,9 @@ fn booleans_fuse_cut_and_common_two_blocks() {
 	let a = cube();
 	let b = cube().translate(DVec3::X * SIDE / 2.0);
 	let (a, b) = (a.as_shape(), b.as_shape());
-	for (operation, expected) in [(BooleanOperation::Fuse, 1500.0), (BooleanOperation::Cut, 500.0), (BooleanOperation::Common, 500.0)] {
-		let applied = apply(Algorithm::Boolean { operation, arguments: &[a], tools: &[b] }).expect("boolean");
+	for (operation, expected) in [(BooleanOperation::Union, 1500.0), (BooleanOperation::Difference, 500.0), (BooleanOperation::Intersection, 500.0)] {
+		let expression = cadrum::Expression::from(a).combine(operation, cadrum::Expression::from(b));
+		let applied = apply(Algorithm::Boolean { expression: &expression }).expect("boolean");
 		let volume: f64 = applied.shape.components(ShapeKind::Solid).iter().map(Shape::volume).sum::<Result<f64, _>>().expect("volume integration");
 		assert!((volume - expected).abs() < 1.0e-6, "{operation:?}: {volume} vs {expected}");
 		assert!(!applied.history.is_empty(), "{operation:?} publishes face history");
@@ -229,7 +230,8 @@ fn a_projection_lays_a_wire_onto_a_shape() {
 fn unifying_a_fused_pair_merges_coplanar_faces() {
 	let a = cube();
 	let b = cube().translate(DVec3::X * SIDE);
-	let fused = shape(apply(Algorithm::Boolean { operation: BooleanOperation::Fuse, arguments: &[a.as_shape()], tools: &[b.as_shape()] }));
+	let expression = cadrum::Expression::from(a.as_shape()).combine(BooleanOperation::Union, cadrum::Expression::from(b.as_shape()));
+	let fused = shape(apply(Algorithm::Boolean { expression: &expression }));
 	let unified = apply(Algorithm::Unify { shape: &fused }).expect("unify");
 	assert_eq!(unified.shape.iter_face().count(), 6, "two blocks in a row are one box");
 	assert!(!unified.history.is_empty());

@@ -677,21 +677,8 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	/// cross-section direction (always closed).
 	fn bspline(u: usize, v: usize, u_periodic: bool, point: impl Fn(usize, usize) -> DVec3) -> Result<Self, Error>;
 
-	// --- Boolean primitive (FFI への唯一の通路) ---
-	// Per-result-Solid face derivation history is attached to each Solid via
-	// `Solid::iter_history()`; no separate metadata channel.
-	//
-	// ユーザーは `Boolean<S>` (= Solid に対する `+`/`-`/`*` 演算子で構築) を
-	// `.build()` / `.build_vec()` に渡す経路を使う。下記 2 メソッドが Boolean<S>
-	// と FFI を繋ぐ通路:
-	//
-	// - `boolean(solids, clauses)` — `&Self` を shallow copy しつつ Boolean を構築。
-	//   バックエンドは TShape identity を保つ複製 (OCCT なら clone_shape_handle) を行う。
-	//   common::boolean 内のすべての solid 複製はこの経路を通る。
-	// - `boolean_build(&Boolean)` — DIMACS-flat DNF の `clauses` を FFI に渡して評価。
-	fn boolean<'a>(solids: impl IntoIterator<Item = &'a Self>, clauses: impl IntoIterator<Item = i64>) -> Boolean<Self>
-	where
-		Self: 'a;
+	/// Share native identity when an expression borrows an operand.
+	fn boolean_operand(&self) -> Self;
 	fn boolean_build(b: &Boolean<Self>) -> Result<Vec<Self>, Error>;
 
 	// --- I/O ---

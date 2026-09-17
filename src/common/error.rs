@@ -17,9 +17,6 @@ pub enum Error {
 	/// Numerical property integration failed to converge.
 	Properties(String),
 
-	/// Boolean operation (fuse/cut/common) failed.
-	Boolean,
-
 	/// Got not one solids although expecting one solid, typically as a result of boolean operation.
 	NotOne(usize),
 
@@ -65,7 +62,6 @@ impl std::fmt::Display for Error {
 			Error::Algorithm(msg) => write!(f, "Algorithm failed: {msg}"),
 			Error::Tessellation(message) => write!(f, "Tessellation failed: {message}"),
 			Error::Properties(message) => write!(f, "Property integration failed: {message}"),
-			Error::Boolean => write!(f, "Boolean operation failed"),
 			Error::NotOne(n) => write!(f, "Expected exactly one resulting Solid, got {n}"),
 			Error::Edge(msg) => write!(f, "Edge failed: {msg}"),
 			Error::Clean => write!(f, "Clean failed"),

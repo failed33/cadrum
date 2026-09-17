@@ -122,3 +122,23 @@ Tests retain the 60-point NACA sections and use the independent analytic thickne
 integral. Normal-plane sweeps are checked against Pappus; an oblique guide has
 an analytic projected-area reference for arc-length mode. Absolute tessellation
 of the closed ring is exercised below the former 0.03 cutoff.
+
+## Boolean expression ownership
+
+`boolean-expression/` is a dependency-free Rust crate shared with the application's
+mesh evaluator. It owns compact postfix expressions and the three set operations;
+operand geometry, preparation and provenance belong to each backend. Construction
+of the program guarantees stack arity and operand indices; those are assertions,
+not a second input-validation pipeline.
+
+`Algorithm::Boolean` and the public solid operators now use one CellsBuilder path.
+The binding evaluates the expression against OCCT's split-cell membership index,
+selects those cells, removes internal boundaries, and rebuilds OCCT history before
+copying the result. No Cartesian DNF expansion or geometric classifier is involved.
+The protected CellsBuilder membership/material fields are specific to the pinned
+OCCT 8.0.1 implementation and need review when that dependency changes.
+
+The former raw DIMACS `Solid::boolean` entry and two-group algorithm row are removed.
+Use `Boolean` operators or `Expression` with `Algorithm::Boolean`. Empty expressions
+build an empty vector; `build()` still requires one solid. Errors retain their native
+cause, and result pieces share one immutable history allocation.

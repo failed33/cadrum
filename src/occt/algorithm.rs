@@ -51,10 +51,9 @@
 //! | `Solid` | `BRepBuilderAPI_MakeSolid` | a shell, cavity shells | -- |
 //! | `Filling` | `BRepOffsetAPI_MakeFilling` | boundary edges | [`Filling`] |
 //! | `Sew` | `BRepBuilderAPI_Sewing` | faces | tolerance |
-//! | `Boolean` | `BRepAlgoAPI_BooleanOperation` | arguments, tools | fuse, cut or common |
 //! | `Splitter` | `BRepAlgoAPI_Splitter` | arguments, tools | -- |
 //! | `Section` | `BRepAlgoAPI_Section` | arguments, tools | -- |
-//! | `Cells` | `BOPAlgo_CellsBuilder` | shapes | a DNF over them |
+//! | `Boolean` | `BOPAlgo_CellsBuilder` | shapes | a compact expression over them |
 //! | `Fillet` | `BRepFilletAPI_MakeFillet` | a shape, edges | radius, radius law |
 //! | `Chamfer` | `BRepFilletAPI_MakeChamfer` | a shape, edges, a reference face per edge | [`Bevel`] |
 //! | `Transform` | `BRepBuilderAPI_GTransform` | a shape | a 3 by 4 affine matrix |
@@ -72,6 +71,7 @@ use super::ffi;
 use super::shape::Shape;
 use crate::common::error::Error;
 use crate::GuideCorrespondence;
+use boolean_expression::{Expression, Instruction, Operation};
 use glam::DVec3;
 use std::sync::{Mutex, PoisonError};
 
@@ -218,15 +218,6 @@ impl Bevel {
 	}
 }
 
-/// What a [`Algorithm::Boolean`] computes between its argument group and its
-/// tool group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BooleanOperation {
-	Fuse,
-	Cut,
-	Common,
-}
-
 /// One row of the table: an OCCT algorithm with its inputs and parameters.
 /// See the module documentation for the builder behind each row.
 #[derive(Debug, Clone, Copy)]
@@ -337,11 +328,7 @@ pub enum Algorithm<'a> {
 		faces: &'a [&'a Face],
 		tolerance: f64,
 	},
-	Boolean {
-		operation: BooleanOperation,
-		arguments: &'a [&'a Shape],
-		tools: &'a [&'a Shape],
-	},
+
 	Splitter {
 		arguments: &'a [&'a Shape],
 		tools: &'a [&'a Shape],
@@ -350,12 +337,11 @@ pub enum Algorithm<'a> {
 		arguments: &'a [&'a Shape],
 		tools: &'a [&'a Shape],
 	},
-	/// Any Boolean expression in disjunctive normal form over `shapes`:
-	/// `+i` takes shape `i-1`, `-i` avoids it, `0` ends a clause.
-	Cells {
-		shapes: &'a [&'a Shape],
-		clauses: &'a [i64],
+	/// Evaluate a compact expression in one native splitting pass.
+	Boolean {
+		expression: &'a Expression<&'a Shape>,
 	},
+
 	/// `radius` at every station unless `law` is given, in which case the
 	/// radius is interpolated through its stations along each contour and
 	/// `radius` is unused.
@@ -523,19 +509,17 @@ impl Algorithm<'_> {
 			Algorithm::Solid { shell, cavities } => Call::new(15).shape(shell).shapes(cavities),
 			Algorithm::Filling { boundary, filling } => Call::new(16).edges(boundary).integer(filling.continuity.code()).integer(i64::from(filling.degree)).integer(i64::from(filling.points_on_curve)).integer(i64::from(filling.iterations)).integer(i64::from(filling.max_degree)).integer(i64::from(filling.max_segments)).scalars([filling.tolerance_2d, filling.tolerance_3d, filling.tolerance_angular, filling.tolerance_curvature]),
 			Algorithm::Sew { faces, tolerance } => Call::new(17).faces(faces).scalar(tolerance),
-			Algorithm::Boolean { operation, arguments, tools } => {
-				let code = match operation {
-					BooleanOperation::Fuse => 0,
-					BooleanOperation::Cut => 1,
-					BooleanOperation::Common => 2,
-				};
-				Call::new(18).shapes(arguments).shapes(tools).integer(code).count(arguments.len())
-			}
+
 			Algorithm::Splitter { arguments, tools } => Call::new(19).shapes(arguments).shapes(tools).count(arguments.len()),
 			Algorithm::Section { arguments, tools } => Call::new(20).shapes(arguments).shapes(tools).count(arguments.len()),
-			Algorithm::Cells { shapes, clauses } => {
-				let mut call = Call::new(21).shapes(shapes);
-				call.integers.extend_from_slice(clauses);
+			Algorithm::Boolean { expression } => {
+				let mut call = Call::new(21).shapes(expression.operands());
+				call.integers.extend(expression.instructions().iter().map(|step| match *step {
+					Instruction::Operand(index) => i64::try_from(index + 1).expect("operand index fits native address space"),
+					Instruction::Combine(Operation::Union) => -1,
+					Instruction::Combine(Operation::Difference) => -2,
+					Instruction::Combine(Operation::Intersection) => -3,
+				}));
 				call
 			}
 			Algorithm::Fillet { shape, edges, radius, law } => Call::new(22).shape(shape).edges(edges).count(law.len()).scalar(radius).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value)),
