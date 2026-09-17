@@ -5,7 +5,7 @@
 //! parameters it is constructed with, nothing else. [`apply`] runs it and
 //! returns what every builder yields uniformly -- the shape, the
 //! `Modified`/`IsDeleted` history of every input, and the section instances a
-//! sweep or loft places at its ends. Error translation, the fault handler and
+//! sweep or loft places at its ends. Error translation and
 //! history extraction live once, in `ffi.cpp`, behind `apply_algorithm`.
 //!
 //! # Designed twice
@@ -71,11 +71,12 @@ use super::face::Face;
 use super::ffi;
 use super::shape::Shape;
 use crate::common::error::Error;
+use crate::GuideCorrespondence;
 use glam::DVec3;
 use std::sync::{Mutex, PoisonError};
 
 /// `BRepOffsetAPI_ThruSections` keeps global state and two concurrent lofts corrupt the heap. The lock
-/// is held below the bridge, so a fault returned through it (ffi.h) releases the lock with the frame.
+/// is held in Rust so ordinary algorithm errors release it when the call returns.
 static LOFT: Mutex<()> = Mutex::new(());
 
 /// Corner treatment where offset faces no longer meet.
@@ -177,7 +178,7 @@ pub enum Frame<'a> {
 	/// The binormal held to this direction.
 	Up(DVec3),
 	/// A second wire that the section's x axis keeps pointing at.
-	Auxiliary(&'a Shape),
+	Auxiliary { guide: &'a Shape, correspondence: GuideCorrespondence },
 }
 
 /// One station of a law sampled along a spine or a fillet contour: `value` at
@@ -503,7 +504,14 @@ impl Algorithm<'_> {
 					Frame::Fixed => (0, DVec3::ZERO, None),
 					Frame::Frenet => (1, DVec3::ZERO, None),
 					Frame::Up(direction) => (2, direction, None),
-					Frame::Auxiliary(wire) => (3, DVec3::ZERO, Some(wire)),
+					Frame::Auxiliary { guide, correspondence } => (
+						match correspondence {
+							GuideCorrespondence::ArcLength => 3,
+							GuideCorrespondence::NormalPlane => 5,
+						},
+						DVec3::ZERO,
+						Some(guide),
+					),
 					Frame::CorrectedFrenet => (4, DVec3::ZERO, None),
 				};
 				Call::new(10).shape(spine).shapes(auxiliary.as_ref()).shapes(sections).integer(code).integer(i64::from(auxiliary.is_some())).count(sections.len()).count(law.len()).integer(i64::from(solid)).vec(up).scalar(tolerance.unwrap_or(f64::NAN)).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value))

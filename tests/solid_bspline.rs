@@ -24,7 +24,7 @@ fn write_outputs(solids: &[Solid], name: &str) {
 /// XZ 平面(法線 Y)と YZ 平面(法線 X)で 4 象限に分割し、180° 回転対称
 /// (s1 ≈ s3, s2 ≈ s4)を体積で検証する。`tol` は相対誤差閾値。
 fn assert_quadrant_point_symmetry(solid: &Solid, tol: f64) {
-	let total = solid.volume();
+	let total = solid.volume().expect("volume integration");
 	assert!(total > 0.0, "volume should be positive, got {}", total);
 
 	// 各 half_space は法線の向きに solid が満ちる。
@@ -39,7 +39,7 @@ fn assert_quadrant_point_symmetry(solid: &Solid, tol: f64) {
 	let quadrant = |hs1: &Solid, hs2: &Solid| -> f64 {
 		let ab: Solid = (solid * hs1).build().expect("intersect hs1");
 		let q: Vec<Solid> = (&ab * hs2).build_vec().expect("intersect hs2");
-		q.iter().map(|s| s.volume()).sum::<f64>()
+		q.iter().map(|s| s.volume().expect("volume integration")).sum::<f64>()
 	};
 
 	let s1 = quadrant(&plus_x, &plus_y); // +X, +Y
@@ -99,7 +99,7 @@ fn test_bspline_01_two_period_torus_point_symmetry() {
 	};
 
 	let plasma = Solid::bspline(M, N, true, &point).expect("2-period bspline torus should succeed");
-	assert!(plasma.volume() > 0.0);
+	assert!(plasma.volume().expect("volume integration") > 0.0);
 
 	assert_quadrant_point_symmetry(&plasma, 0.01);
 

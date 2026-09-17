@@ -23,7 +23,7 @@ fn main() -> Result<(), cadrum::Error> {
 	println!("spine tube: faces={}  aux tube: faces={}", spine_tube.iter_face().count(), aux_tube.iter_face().count());
 	output(&[spine_tube, aux_tube], Some("_tubes"))?;
 	let prof = profile(2.0, 0.2)?.map(|v| v.align_z(spine.start_tangent(), DVec3::Y).translate(spine.start_point()));
-	let mevius = Solid::sweep(&prof, &[spine], ProfileOrient::Auxiliary(&[aux]))?.color("#2ebc71");
+	let mevius = Solid::sweep(&prof, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?.color("#2ebc71");
 	output(&[mevius], None)?;
 	return Ok(());
 }

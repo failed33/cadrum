@@ -220,7 +220,7 @@ fn link_occt_libraries(occt_include: &Path, occt_lib_dir: &Path, target: &str) {
 
 	let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 	let is_mingw_like = target_env == "gnu" || target_env == "gnullvm";
-	if is_mingw_like {
+	if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && is_mingw_like {
 		println!("cargo:rustc-link-arg=-Wl,--allow-multiple-definition");
 	}
 
@@ -243,6 +243,7 @@ fn link_occt_libraries(occt_include: &Path, occt_lib_dir: &Path, target: &str) {
 	println!("cargo:rerun-if-changed=src/ffi.rs");
 	println!("cargo:rerun-if-changed=src/ffi.h");
 	println!("cargo:rerun-if-changed=src/ffi.cpp");
+	println!("cargo:rerun-if-changed=patches/GeomFill_GuideTrihedronAC.cxx");
 }
 
 /// Provide OCCT into `effective_root` by downloading a prebuilt tarball for `target`.

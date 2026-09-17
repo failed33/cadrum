@@ -13,8 +13,8 @@
 //! 標準のイテレータ慣用句で行う（専用のコレクション・トレイトは持たない）:
 //!   - 変換: `vec.into_iter().map(|s| s.translate(v)).collect::<Vec<_>>()` /
 //!     配列は `arr.map(|s| s.translate(v))`
-//!   - 集約: `solids.iter().map(|s| s.volume()).sum::<f64>()`、重心や慣性テンソルは
-//!     `a.inertia() + b.inertia()` のように呼び出し側で合成する
+//!   - 集約: `solids.iter().map(|s| s.volume()).sum::<Result<f64, _>>()?`、重心や慣性テンソルは
+//!     `a.inertia()? + b.inertia()?` のように呼び出し側で合成する
 //!
 //! sweep / loft / extrude / boolean / I/O はコレクション型を直接受けず
 //! `impl IntoIterator<Item = &Edge>` / `&Solid` を取る。順序付きの `Vec<Edge>` が
@@ -190,6 +190,15 @@ pub trait Transform: Sized {
 	}
 }
 
+/// How a spine station selects its corresponding point on the auxiliary guide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuideCorrespondence {
+	/// Equal fractions of each curve's length. Sections can tilt away from the spine normal.
+	ArcLength,
+	/// Intersect the guide with the plane normal to the spine tangent at each station.
+	NormalPlane,
+}
+
 // ==================== ProfileOrient ====================
 
 /// Controls how the cross-section profile is oriented as it travels along the
@@ -203,7 +212,7 @@ pub trait Transform: Sized {
 /// | ねじ・バネ・つる (helix 系) | [`Torsion`](Self::Torsion) または [`Up`](Self::Up)`(axis)` |
 /// | 道路・線路・パイプ (重力方向を保ちたい) | [`Up`](Self::Up)`(DVec3::Z)` |
 /// | 上記に当てはまらない 3D 自由曲線 | [`Torsion`](Self::Torsion) |
-/// | 任意の捻り制御 (メビウスの輪等) | [`Auxiliary`](Self::Auxiliary)`(&aux_spine)` |
+/// | 任意の捻り制御 (メビウスの輪等) | [`Auxiliary`](Self::Auxiliary) |
 ///
 /// **`Torsion` と `Up(axis)` の関係**: helix のような定曲率・定 torsion 曲線では、
 /// この 2 つは数学的に等価なトリヘドロンを生成します。`Torsion` は曲線の主法線
@@ -242,7 +251,7 @@ pub enum ProfileOrient<'a> {
 	/// The profile's X axis tracks the direction toward the auxiliary spine.
 	///
 	/// - **適**: メビウスの輪、ステラレーターの断面回転、任意の捻り制御
-	Auxiliary(&'a [crate::Edge]),
+	Auxiliary { guide: &'a [crate::Edge], correspondence: GuideCorrespondence },
 }
 
 // ==================== BSplineEnd ====================
@@ -453,8 +462,8 @@ pub trait FaceStruct: Sized + Debug {
 /// (volume / area / center / inertia / bounding_box / contains), color, editing,
 /// boolean primitives and I/O. Spatial transforms come from the `Transform`
 /// supertrait. Collections of solids (`Vec<Solid>` / `[Solid; N]`) are handled
-/// with iterator idioms — e.g. `solids.iter().map(|s| s.volume()).sum::<f64>()`,
-/// `a.inertia() + b.inertia()` — not a dedicated collection trait.
+/// with iterator idioms — e.g. `solids.iter().map(|s| s.volume()).sum::<Result<f64, _>>()?`,
+/// `a.inertia()? + b.inertia()?` — not a dedicated collection trait.
 ///
 /// examples/codegen.rs generates `impl Solid { pub fn ... }` from this trait
 /// and walks the supertrait chain to expose `Transform` methods inherently as well.
@@ -495,14 +504,14 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	fn iter_history(&self) -> impl Iterator<Item = [u64; 2]> + '_;
 
 	// --- Queries ---
-	/// Volume of the solid (uniform density).
-	fn volume(&self) -> f64;
+	/// Volume of the solid (uniform density). Integration failures are returned.
+	fn volume(&self) -> Result<f64, Error>;
 	/// Total surface area of the solid.
-	fn area(&self) -> f64;
+	fn area(&self) -> Result<f64, Error>;
 	/// Center of mass (uniform density).
-	fn center(&self) -> DVec3;
+	fn center(&self) -> Result<DVec3, Error>;
 	/// Inertia tensor about the **world origin** (uniform density).
-	fn inertia(&self) -> DMat3;
+	fn inertia(&self) -> Result<DMat3, Error>;
 	/// Whether `point` lies inside (or on) the solid.
 	fn contains(&self, point: DVec3) -> bool;
 	/// Axis-aligned bounding box as `[min, max]`.
@@ -726,6 +735,6 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 // Collections of solids/edges (`Vec<T>`, `[T; N]`, slices, iterators) are NOT
 // special-cased with a dedicated trait. Transform them with iterator idioms
 // (`vec.into_iter().map(|s| s.translate(v)).collect::<Vec<_>>()`), and aggregate
-// queries the same way (`solids.iter().map(|s| s.volume()).sum::<f64>()`,
-// `a.inertia() + b.inertia()`). sweep / loft / extrude / boolean / I/O accept
+// queries the same way (`solids.iter().map(|s| s.volume()).sum::<Result<f64, _>>()?`,
+// `a.inertia()? + b.inertia()?`). sweep / loft / extrude / boolean / I/O accept
 // any `impl IntoIterator<Item = &Edge>` / `&Solid` directly.

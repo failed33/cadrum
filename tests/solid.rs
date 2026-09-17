@@ -16,7 +16,7 @@ fn test_box() -> Solid {
 fn test_translated_preserves_volume() {
 	let shape = test_box();
 	let moved = shape.translate(dvec3(100.0, 200.0, -50.0));
-	assert!((moved.volume() - 1000.0).abs() < 1e-6);
+	assert!((moved.volume().expect("volume integration") - 1000.0).abs() < 1e-6);
 }
 
 #[test]
@@ -29,18 +29,18 @@ fn test_union_of_translated_overlapping_solids_has_single_volume() {
 
 	// b と b_moved は実態が別であることを確認: a と b（移動前）を union するとvolumeは2つ分（2000）。
 	let result_no_move: Vec<Solid> = (&a[0] + &b[0]).build_vec().expect("union should succeed");
-	let volume_no_move: f64 = result_no_move.iter().map(|s| s.volume()).sum();
+	let volume_no_move: f64 = result_no_move.iter().map(|s| s.volume().expect("volume integration")).sum();
 	assert!((volume_no_move - 2000.0).abs() < 1e-3, "expected volume ~2000, got {volume_no_move}");
 
 	// b_moved は a と完全に重なるので union すると1つ分（1000）。
 	let result: Vec<Solid> = (&a[0] + &b_moved[0]).build_vec().expect("union should succeed");
-	let volume: f64 = result.iter().map(|s| s.volume()).sum();
+	let volume: f64 = result.iter().map(|s| s.volume().expect("volume integration")).sum();
 	assert!((volume - 1000.0).abs() < 1e-3, "expected volume ~1000, got {volume}");
 
 	// b_moved を作っても b は変化していないことを確認:
 	// result（x=0付近, volume=1000）と b（x=100付近, volume=1000）を union すると2000になるはず。
 	let result_with_b: Vec<Solid> = result.iter().chain(b.iter()).map(Boolean::from).reduce(|a, b| a + b).unwrap().build_vec().expect("union should succeed");
-	let volume_with_b: f64 = result_with_b.iter().map(|s| s.volume()).sum();
+	let volume_with_b: f64 = result_with_b.iter().map(|s| s.volume().expect("volume integration")).sum();
 	assert!((volume_with_b - 2000.0).abs() < 1e-3, "expected volume ~2000, got {volume_with_b}");
 }
 
@@ -51,14 +51,14 @@ fn test_rotated_preserves_volume() {
 	let shape = test_box();
 	// Z 軸周りに 45° 回転
 	let rotated = shape.rotate_z(std::f64::consts::FRAC_PI_4);
-	assert!((rotated.volume() - 1000.0).abs() < 1e-3);
+	assert!((rotated.volume().expect("volume integration") - 1000.0).abs() < 1e-3);
 }
 
 #[test]
 fn test_rotated_y_preserves_volume() {
 	let shape = test_box();
 	let rotated = shape.rotate_y(std::f64::consts::FRAC_PI_2);
-	assert!((rotated.volume() - 1000.0).abs() < 1e-3);
+	assert!((rotated.volume().expect("volume integration") - 1000.0).abs() < 1e-3);
 }
 
 // ==================== scale ====================
@@ -68,7 +68,7 @@ fn test_scale_volume() {
 	let shape = test_box();
 	// 均一 2 倍スケール → 体積は 2³ = 8 倍
 	let scaled = shape.scale(DVec3::ZERO, 2.0);
-	assert!((scaled.volume() - 8000.0).abs() < 1e-3);
+	assert!((scaled.volume().expect("volume integration") - 8000.0).abs() < 1e-3);
 }
 
 // ==================== face id preservation ====================
@@ -151,8 +151,8 @@ fn cube_corner_order_independent() {
 	let a = Solid::cube(DVec3::ZERO, DVec3::ONE);
 	let b = Solid::cube(DVec3::ONE, DVec3::ZERO);
 	assert_eq!(a.bounding_box(), b.bounding_box(), "corner order must not change the box");
-	assert!((a.volume() - b.volume()).abs() < 1e-9);
-	assert!((a.volume() - 1.0).abs() < 1e-9, "unit cube volume should be 1");
+	assert!((a.volume().expect("volume integration") - b.volume().expect("volume integration")).abs() < 1e-9);
+	assert!((a.volume().expect("volume integration") - 1.0).abs() < 1e-9, "unit cube volume should be 1");
 }
 
 // ==================== bounding_box ====================

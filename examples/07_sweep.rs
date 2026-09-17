@@ -106,7 +106,7 @@ fn build_twisted_ribbon() -> Result<Solid, Error> {
 	// Flat rectangle (10:1 aspect) — circles or squares wouldn't reveal any twist.
 	let profile = Edge::polygon(&[DVec3::new(-2.0, -0.2, 0.0), DVec3::new(2.0, -0.2, 0.0), DVec3::new(2.0, 0.2, 0.0), DVec3::new(-2.0, 0.2, 0.0)])?;
 
-	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary(&[aux]))?;
+	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?;
 	Ok(ribbon.translate(DVec3::X * 12.0).color("green"))
 }
 

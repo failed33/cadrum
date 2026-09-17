@@ -19,15 +19,16 @@ fn dvec3(x: f64, y: f64, z: f64) -> DVec3 {
 #[test]
 fn sphere_normals_come_from_the_surface() {
 	let tess = Tessellation { deflection_linear: 0.1, relative_linear: false, ..Default::default() };
-	let mesh = Solid::mesh(&[Solid::sphere(5.0)], tess).unwrap();
-
-	assert_eq!(mesh.normals.len(), mesh.vertices.len(), "one normal per vertex");
-	assert!(!mesh.normals.is_empty(), "sphere must produce vertices");
-
-	for (v, n) in mesh.vertices.iter().zip(&mesh.normals) {
-		assert!((n.length() - 1.0).abs() < 1e-6, "normal must be unit length at {v:?}: {n:?}");
-		let radial = v.normalize();
-		assert!(n.dot(radial) > 1.0 - 1e-6, "normal must be the exact surface normal at {v:?}: got {n:?}, expected {radial:?}");
+	for center in [cadrum::DVec3::ZERO, cadrum::DVec3::new(7.0, -3.0, 2.0)] {
+		let sphere = Solid::sphere(5.0).rotate_y(0.73).translate(center);
+		let mesh = Solid::mesh(&[sphere], tess).expect("sphere mesh");
+		assert_eq!(mesh.normals.len(), mesh.vertices.len(), "one normal per vertex");
+		assert!(!mesh.normals.is_empty(), "sphere must produce vertices");
+		for (v, n) in mesh.vertices.iter().zip(&mesh.normals) {
+			assert!((n.length() - 1.0).abs() < 1e-6, "normal must be unit length at {v:?}: {n:?}");
+			let radial = (*v - center).normalize();
+			assert!(n.dot(radial) > 1.0 - 1e-6, "surface normal at {v:?}: got {n:?}, expected {radial:?}");
+		}
 	}
 }
 
@@ -173,22 +174,37 @@ mod glb {
 		assert!(json.contains(r#""NORMAL":"#), "triangles must carry vertex normals");
 	}
 
-	/// A small mesh (≤ 65535 vertices) stores indices as UNSIGNED_SHORT (5123);
-	/// UNSIGNED_INT (5125) must not appear (issue #181).
 	#[test]
-	fn small_u16_indices() {
-		let glb = glb_to_file(&[Solid::cube(DVec3::ZERO, DVec3::splat(10.0))], Default::default(), "glb_small_u16_indices");
-		let json = glb_json(&glb);
-		assert!(json.contains(r#""componentType":5123"#), "small mesh must use UNSIGNED_SHORT index accessors");
-		assert!(!json.contains(r#""componentType":5125"#), "small mesh must not emit UNSIGNED_INT index accessors");
-	}
-
-	/// A mesh exceeding 65535 vertices falls back to UNSIGNED_INT (5125) (issue #181).
-	#[test]
-	fn large_u32_indices() {
-		let tess = Tessellation { deflection_linear: 0.0038, relative_linear: false, ..Default::default() }; // ≈66632 verts > 65535
-		let glb = glb_to_file(&[Solid::sphere(50.0)], tess, "glb_large_u32_indices");
-		assert!(glb_json(&glb).contains(r#""componentType":5125"#), "mesh with >65535 vertices must use UNSIGNED_INT index accessors");
+	fn index_width_preserves_indices_at_the_u16_boundary() {
+		for vertex_count in [65_535, 65_536, 65_537] {
+			let mut vertices = vec![DVec3::ZERO; vertex_count];
+			vertices[1] = DVec3::X;
+			vertices[vertex_count - 1] = DVec3::Y;
+			let mesh = cadrum::Mesh {
+				vertices,
+				normals: vec![DVec3::Z; vertex_count],
+				indices: vec![0, 1, vertex_count - 1],
+				face_ids: vec![1],
+				#[cfg(feature = "color")]
+				colormap: Default::default(),
+				edges: Vec::new(),
+			};
+			let mut glb = Vec::new();
+			mesh.write_gltf_binary(&mut glb).expect("GLB at the index-width boundary");
+			let json = glb_json(&glb);
+			let last_index = u32::try_from(vertex_count - 1).expect("test index fits u32");
+			if vertex_count == 65_535 {
+				assert!(json.contains(r#""componentType":5123"#));
+				assert!(!json.contains(r#""componentType":5125"#));
+				let encoded: Vec<u8> = [0, 1, u16::try_from(last_index).expect("short index")].into_iter().flat_map(u16::to_le_bytes).collect();
+				assert_eq!(&glb[glb.len() - 8..glb.len() - 2], encoded, "short indices before alignment padding");
+			} else {
+				assert!(json.contains(r#""componentType":5125"#));
+				assert!(!json.contains(r#""componentType":5123"#));
+				let encoded: Vec<u8> = [0, 1, last_index].into_iter().flat_map(u32::to_le_bytes).collect();
+				assert_eq!(&glb[glb.len() - 12..], encoded, "large indices must not truncate");
+			}
+		}
 	}
 }
 
@@ -244,5 +260,14 @@ mod png {
 				write("png_dimensions_are_exact", &buf);
 			}
 		}
+	}
+}
+
+#[test]
+fn invalid_deflection_preserves_the_meshing_error() {
+	let sphere = Solid::sphere(2.0);
+	for linear in [0.0, -0.01, f64::NAN] {
+		let error = Solid::mesh([&sphere], Tessellation { deflection_linear: linear, relative_linear: false, ..Default::default() }).expect_err("invalid deflection");
+		assert!(matches!(error, cadrum::Error::Tessellation(reason) if reason.contains("finite and positive")));
 	}
 }

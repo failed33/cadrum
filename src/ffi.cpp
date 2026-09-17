@@ -1,5 +1,10 @@
 #include "cadrum/src/ffi.rs.h"
 
+// Keep the guide derivative correction identical for source and prebuilt OCCT.
+#include <Standard_Version.hxx>
+static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch when updating OCCT");
+#include "../patches/GeomFill_GuideTrihedronAC.cxx"
+
 // ==================== OCCT headers (impl only — not exposed via wrapper.h) ====================
 //
 // Grouped by responsibility. Anything used in wrapper.h is included there;
@@ -99,6 +104,7 @@
 #include <Bnd_Box.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
+#include <GProp_PrincipalProps.hxx>
 
 // --- Curve adaptation / approximation ---
 #include <BRepAdaptor_Curve.hxx>
@@ -125,17 +131,7 @@
 #endif
 #include <Message.hxx>
 
-// --- Signal translation ---
-#include <OSD.hxx>
-#include <OSD_Exception_ACCESS_VIOLATION.hxx>
-#include <Standard_NumericError.hxx>
-#if defined(__unix__) || defined(__APPLE__)
-#include <csignal>
-#include <pthread.h>
-#endif
-
 // --- C++ standard library ---
-#include <mutex>
 #include <istream>
 #include <ostream>
 #include <sstream>
@@ -153,111 +149,6 @@
 #include <utility>
 
 namespace cadrum {
-
-// ==================== Signal-to-exception translation ====================
-//
-// OCCT algorithms fault on degenerate input (`BRepOffsetAPI_MakeOffsetShape`
-// at wall thickness ≥ half the body extent, `BRepOffsetAPI_MakeFilling` over a
-// boundary enclosing no area) instead of raising `Standard_Failure`, so every
-// `catch (const Standard_Failure&)` below is unreachable and the process
-// aborts. OCCT's own remedy is `OSD::SetSignal`, which translates the C signal
-// into a `Standard_Failure`-derived exception — but `OSD_signal.cxx` is one of
-// the POSIX sources `build.rs` body-stubs, so in the linked library
-// `OSD::SetSignal` is a bare `ret` and installs nothing. The translation is
-// therefore installed here. Outside a bridge call it throws the same exception
-// types OCCT's own handler throws, so a catch block sees the failure it
-// already expects.
-//
-// A throw out of a signal frame arrives at a catch only where every frame
-// between the faulting instruction and that catch is unwindable. A `noexcept`
-// member of the standard library, an assembly leaf, or -- on GCC targets, the
-// prebuilt OCCT throughout -- a function compiled without exception tables over
-// its faulting instructions terminates the process instead. So inside a bridge
-// call the handler does not throw: it returns to the call's fault return
-// (ffi.h), which reports the fault as that call's error. The throw remains for
-// a fault outside every bridge call.
-//
-// Dispositions set by `sigaction` are process-wide and shared by every thread,
-// so one installation covers callers that evaluate off the main thread; the
-// per-thread part of OCCT's setup (`OSD::SetThreadLocalSignal`) only arms
-// floating-point traps, which stay disarmed here as `OSD::SetSignal(false)`
-// leaves them.
-#if defined(__unix__) || defined(__APPLE__)
-
-sigjmp_buf*& fault_return() {
-    thread_local sigjmp_buf* live = nullptr;
-    return live;
-}
-
-// Names the signal actually caught: a report that renames a bus error as a
-// segmentation fault sends the reader after the wrong cause.
-const char* fault_message(int signal_number) {
-    switch (signal_number) {
-        case SIGFPE:
-            return "SIGFPE raised inside an OCCT algorithm";
-        case SIGBUS:
-            return "SIGBUS raised inside an OCCT algorithm";
-        case SIGSEGV:
-            return "SIGSEGV raised inside an OCCT algorithm";
-        default:
-            return "a fault signal raised inside an OCCT algorithm";
-    }
-}
-
-#endif
-
-namespace {
-
-#if defined(__unix__) || defined(__APPLE__)
-
-extern "C" void raise_signal_as_failure(int signal_number, siginfo_t*, void*) {
-    // `sigsetjmp(here, 1)` saved the mask with the signal unblocked, and
-    // `siglongjmp` restores it, so the jump leaves no `sigreturn` behind.
-    if (sigjmp_buf* here = fault_return()) siglongjmp(*here, signal_number);
-
-    // The signal is blocked for the duration of its own handler, and throwing
-    // out of the handler skips the `sigreturn` that would restore the mask.
-    sigset_t raised;
-    sigemptyset(&raised);
-    sigaddset(&raised, signal_number);
-    pthread_sigmask(SIG_UNBLOCK, &raised, nullptr);
-
-    if (signal_number == SIGFPE) throw Standard_NumericError(fault_message(signal_number));
-    throw OSD_Exception_ACCESS_VIOLATION(fault_message(signal_number));
-}
-
-void install_signal_translation() {
-    struct sigaction action = {};
-    action.sa_sigaction = raise_signal_as_failure;
-    action.sa_flags = SA_SIGINFO;
-    sigemptyset(&action.sa_mask);
-    for (int signal_number : {SIGSEGV, SIGBUS, SIGFPE}) {
-        sigaction(signal_number, &action, nullptr);
-    }
-}
-
-#else
-
-// Windows and wasm have no POSIX disposition to set. `OSD::SetSignal` is the
-// call OCCT intends for them, and takes effect the moment `build.rs` stops
-// stubbing `OSD_signal.cxx`; until then those targets still abort on a fault.
-void install_signal_translation() {
-    OSD::SetSignal(false);
-}
-
-#endif
-
-std::once_flag signal_translation_once;
-
-/// Runs during load-time initialisation of this translation unit, before any
-/// binding can be called; `std::call_once` keeps it single even if a host
-/// loads the binding from several threads.
-const bool signal_translation_installed = [] {
-    std::call_once(signal_translation_once, install_signal_translation);
-    return true;
-}();
-
-}  // namespace
 
 bool shape_is_valid(const TopoDS_Shape& shape) {
     try {
@@ -505,13 +396,27 @@ uint32_t shape_kind(const TopoDS_Shape& shape) {
     }
 }
 
-// Adaptive integration: the fixed-order rule under-integrates a face whose
-// surface has more knot spans than the rule has points (a loft, ~20% low).
 constexpr double MASS_PROPERTY_EPS = 1.0e-6;
+
+static void check_integration(double error, double mass) {
+    if (!std::isfinite(mass)) throw std::runtime_error("non-finite integrated measure");
+    if (!std::isfinite(error) || error < 0.0 || error > MASS_PROPERTY_EPS) {
+        std::ostringstream message;
+        message << "requested relative integration error " << MASS_PROPERTY_EPS << ", achieved " << error;
+        throw std::runtime_error(message.str());
+    }
+}
 
 static GProp_GProps volume_properties(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props, MASS_PROPERTY_EPS);
+    double error = BRepGProp::VolumeProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
+    if (!std::isfinite(error) || error < 0.0 || error > MASS_PROPERTY_EPS) {
+        // The fallback integrates knot spans explicitly when adaptive Gauss
+        // cannot resolve a spline face within its internal iteration limit.
+        props = GProp_GProps();
+        error = BRepGProp::VolumePropertiesGK(shape, props, MASS_PROPERTY_EPS * 0.01, false, true, true, true);
+    }
+    check_integration(error, props.Mass());
     return props;
 }
 
@@ -521,7 +426,12 @@ double shape_volume(const TopoDS_Shape& shape) {
 
 double shape_surface_area(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS);
+    double error = BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
+    if (!std::isfinite(error) || error < 0.0 || error > MASS_PROPERTY_EPS) {
+        props = GProp_GProps();
+        error = BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS * 0.0001);
+    }
+    check_integration(error, props.Mass());
     return props.Mass();
 }
 
@@ -530,6 +440,8 @@ void shape_center_of_mass(const TopoDS_Shape& shape,
 {
     GProp_GProps props = volume_properties(shape);
     gp_Pnt com = props.CentreOfMass();
+    if (!std::isfinite(com.X()) || !std::isfinite(com.Y()) || !std::isfinite(com.Z()))
+        throw std::runtime_error("non-finite centre of mass");
     x = com.X(); y = com.Y(); z = com.Z();
 }
 
@@ -556,6 +468,8 @@ void shape_inertia_tensor(const TopoDS_Shape& shape,
     m02 = ic.Value(1,3) - mass * dx * dz;
     m12 = ic.Value(2,3) - mass * dy * dz;
     m10 = m01; m20 = m02; m21 = m12;
+    for (double value : {m00, m01, m02, m11, m12, m22})
+        if (!std::isfinite(value)) throw std::runtime_error("non-finite inertia tensor");
 }
 
 bool shape_contains_point(const TopoDS_Shape& shape, double x, double y, double z) {
@@ -576,7 +490,8 @@ void shape_bounding_box(const TopoDS_Shape& shape,
 
 MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bool relative) {
     MeshData result;
-    result.success = false;
+    if (!std::isfinite(linear) || linear <= 0.0 || !std::isfinite(angular) || angular <= 0.0)
+        throw std::invalid_argument("linear and angular deflections must be finite and positive");
 
     // BRepMesh_IncrementalMesh(shape, linDeflection, isRelative, angDeflection, isInParallel)
     IMeshTools_Parameters parameters;
@@ -588,24 +503,42 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
     parameters.AngleInterior = angular;
     parameters.Relative = relative;
     parameters.EnableControlSurfaceDeflectionAllSurfaces = true;
-    bool within_budget = false;
-    for (int attempt = 0; attempt < 6; ++attempt) {
+    constexpr uint64_t MAX_REFINEMENT_TRIANGLES = 4'000'000;
+    double previous = std::numeric_limits<double>::infinity();
+    uint64_t previous_triangles = 0;
+    int unchanged = 0;
+    for (;;) {
         BRepMesh_IncrementalMesh mesher(shape, parameters);
-        if (!mesher.IsDone()) return result;
-        if (relative) { within_budget = true; break; }
+        if (!mesher.IsDone()) throw std::runtime_error("mesher did not complete; status=" + std::to_string(mesher.GetStatusFlags()));
+        if (relative) break;
         BRepLib::UpdateDeflection(shape);
         double measured = 0.0;
+        uint64_t triangles = 0;
         for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
             TopLoc_Location location;
             const auto& mesh = BRep_Tool::Triangulation(TopoDS::Face(faces.Current()), location);
-            if (mesh.IsNull() || !mesh->HasUVNodes()) return result;
+            if (mesh.IsNull() || !mesh->HasUVNodes()) throw std::runtime_error("face has no surface triangulation");
+            if (!std::isfinite(mesh->Deflection())) throw std::runtime_error("non-finite measured deflection");
             measured = std::max(measured, mesh->Deflection());
+            triangles += static_cast<uint64_t>(mesh->NbTriangles());
         }
-        if (std::isfinite(measured) && measured <= mesh_budget) { within_budget = true; break; }
-        parameters.Deflection *= 0.5;
-        parameters.DeflectionInterior *= 0.5;
+        if (measured <= mesh_budget) break;
+        unchanged = measured >= previous && triangles == previous_triangles ? unchanged + 1 : 0;
+        if (unchanged >= 3 || triangles >= MAX_REFINEMENT_TRIANGLES || parameters.Deflection <= Precision::Confusion()) {
+            std::ostringstream message;
+            message << "refinement " << (unchanged >= 3 ? "stalled" : "budget exhausted")
+                    << ": requested=" << linear << ", measured=" << measured
+                    << ", triangles=" << triangles << ", status=" << mesher.GetStatusFlags();
+            throw std::runtime_error(message.str());
+        }
+        previous = measured;
+        previous_triangles = triangles;
+        // Adjust the requested chord error using its measured overshoot;
+        // cap each refinement step because the estimator need not be monotone.
+        double factor = std::clamp(0.8 * mesh_budget / measured, 0.25, 0.5);
+        parameters.Deflection *= factor;
+        parameters.DeflectionInterior *= factor;
     }
-    if (!within_budget) return result;
 
     uint32_t global_vertex_offset = 0;
 
@@ -623,7 +556,7 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         // triangulation at all, or a triangulation with no nodes.
         BRepLib_ToolTriangulatedShape::ComputeNormals(face, triangulation);
         if (triangulation.IsNull() || !triangulation->HasNormals()) {
-            return result;
+            throw std::runtime_error("mesh has no usable surface normals");
         }
 
         // Consolidate singular surface nodes and discard collapsed facets using
@@ -641,12 +574,16 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
                 for (int k = 0; k < 3; ++k) merger.ChangeElementNode(k) = triangulation->Node(corner[k]).XYZ();
                 merger.PushLastTriangle();
                 for (int k = 0; k < 3; ++k) {
-                    const size_t merged = static_cast<size_t>(merger.ElementNodeIndex(k));
+                    const int node = merger.ElementNodeIndex(k);
+                    if (node < 0 || node >= merger.NbNodes()) throw std::runtime_error("invalid merged node index");
+                    const size_t merged = static_cast<size_t>(node);
                     if (merged >= normals.size()) normals.resize(merged + 1, gp::DZ());
                     normals[merged] = triangulation->Normal(corner[k]);
                 }
             }
             triangulation = merger.Result();
+            if (triangulation.IsNull() || triangulation->NbNodes() == 0 || triangulation->NbTriangles() == 0)
+                throw std::runtime_error("face triangulation collapsed during node merging");
             triangulation->AddNormals();
             for (size_t i = 0; i < normals.size(); ++i) triangulation->SetNormal(static_cast<int>(i) + 1, normals[i]);
         }
@@ -655,7 +592,7 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         int nb_triangles = triangulation->NbTriangles();
         if (nb_nodes <= 0 || nb_triangles <= 0 ||
             static_cast<uint64_t>(global_vertex_offset) + static_cast<uint64_t>(nb_nodes) >
-                std::numeric_limits<uint32_t>::max()) return result;
+                std::numeric_limits<uint32_t>::max()) throw std::runtime_error("empty mesh or vertex index overflow");
 
         // Shared by the nodal normals and the index winding below.
         bool reversed = (face.Orientation() == TopAbs_REVERSED);
@@ -703,7 +640,6 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         global_vertex_offset += nb_nodes;
     }
 
-    result.success = true;
     return result;
 }
 
@@ -1452,7 +1388,8 @@ Product row(Row row, const Call& call) {
                 }
                 case 1: builder.SetMode(true); break;
                 case 2: builder.SetMode(call.dir(0)); break;
-                case 3: builder.SetMode(TopoDS::Wire(call.shape(next++)), true); break;
+                case 3:
+                case 5: builder.SetMode(TopoDS::Wire(call.shape(next++)), call.integer(0) == 3); break;
                 case 4: builder.SetMode(false); break;
                 default: throw std::invalid_argument("unknown sweep frame");
             }
@@ -1470,8 +1407,21 @@ Product row(Row row, const Call& call) {
             } else {
                 for (size_t section = 0; section < sections; ++section) builder.Add(TopoDS::Wire(call.shape(next + section)), false, false);
             }
-            if (std::isfinite(call.scalar(3))) builder.SetTolerance(call.scalar(3), call.scalar(3), call.scalar(3));
-            builder.Build();
+            if (std::isfinite(call.scalar(3))) builder.SetTolerance(call.scalar(3), call.scalar(3));
+            const double tolerance = std::isfinite(call.scalar(3)) ? call.scalar(3) : 1.0e-4;
+            double error = std::numeric_limits<double>::infinity();
+            for (int segments = 100; segments <= 1600; segments *= 2) {
+                builder.SetMaxSegments(segments);
+                builder.Build();
+                if (!builder.IsDone()) break;
+                error = builder.ErrorOnSurface();
+                if (std::isfinite(error) && error <= tolerance) break;
+            }
+            if (!std::isfinite(error) || error > tolerance) {
+                std::ostringstream message;
+                message << "sweep approximation did not converge: requested " << tolerance << ", achieved " << error;
+                throw std::runtime_error(message.str());
+            }
             if (call.integer(4) != 0 && (!builder.IsDone() || !builder.MakeSolid())) throw std::runtime_error("could not close the swept shell into a solid");
             return done(builder, call);
         }
@@ -1523,6 +1473,18 @@ Product row(Row row, const Call& call) {
         case ROW_FILLING: {
             // integers: [continuity, degree, points on curve, iterations, max degree, max segments]
             // scalars: [tolerance 2d, tolerance 3d, tolerance angular, tolerance curvature]
+            TopoDS_Compound boundary;
+            BRep_Builder topology;
+            topology.MakeCompound(boundary);
+            for (const auto& edge : call.shapes) topology.Add(boundary, edge);
+            GProp_GProps length;
+            BRepGProp::LinearProperties(boundary, length);
+            double principal[3];
+            length.PrincipalProperties().Moments(principal[0], principal[1], principal[2]);
+            // A collinear boundary has no plate normal; OCCT dereferences its
+            // absent initial surface instead of reporting a construction error.
+            if (!(length.Mass() > 0.0) || *std::min_element(principal, principal + 3) <= length.Mass() * call.scalar(1) * call.scalar(1))
+                throw std::invalid_argument("boundary does not span a surface at the construction tolerance");
             BRepOffsetAPI_MakeFilling builder(static_cast<int>(call.integer(1)), static_cast<int>(call.integer(2)), static_cast<int>(call.integer(3)), false, call.scalar(0), call.scalar(1), call.scalar(2), call.scalar(3), static_cast<int>(call.integer(4)), static_cast<int>(call.integer(5)));
             const GeomAbs_Shape order = continuity_order(static_cast<uint32_t>(call.integer(0)), "fill");
             for (const auto& edge : call.shapes) builder.Add(TopoDS::Edge(edge), order, true);

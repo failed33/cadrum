@@ -13,9 +13,8 @@ use cadrum::{BSplineEnd, Edge, Error, Solid};
 use glam::DVec3;
 use std::f64::consts::PI;
 
-/// NACA 断面の半周あたりのデータ点数。推定値 (内接多角形の shoelace 面積) と
-/// B-spline 断面の面積差は 24 点で 0.3%、体積許容 1% に対し 3 倍の余裕。
-const SECTION_POINTS: usize = 24;
+/// Keep many knot spans to regress the fixed-order integration failure.
+const SECTION_POINTS: usize = 60;
 
 /// solid を out/ 以下に SVG, STL, STEP で書き出す。
 fn write_outputs(solids: &[Solid], name: &str) {
@@ -41,10 +40,10 @@ fn test_loft_01_frustum_volume_matches_analytical() {
 	let frustum = Solid::loft(&[lower, upper], false).expect("frustum loft should succeed");
 
 	let expected = PI / 3.0 * h * (r1 * r1 + r1 * r2 + r2 * r2);
-	let actual = frustum.volume();
+	let actual = frustum.volume().expect("volume integration");
 	let rel_err = (actual - expected).abs() / expected;
 
-	assert!(rel_err < 0.01, "frustum volume {:.4} vs analytical {:.4} (relative error {:.4})", actual, expected, rel_err);
+	assert!(rel_err < 1e-5, "frustum volume {:.4} vs analytical {:.4} (relative error {:.4})", actual, expected, rel_err);
 
 	write_outputs(std::slice::from_ref(&frustum), "test_loft_01_frustum_volume_matches_analytical");
 	println!("frustum loft: volume = {:.4} (expected {:.4})", actual, expected);
@@ -93,7 +92,7 @@ fn test_loft_04_closure_iterator_form() {
 
 	let plasma = Solid::loft(ribs.iter().map(|e| [e]), false).expect("closure-form loft should succeed");
 
-	assert!(plasma.volume() > 0.0);
+	assert!(plasma.volume().expect("volume integration") > 0.0);
 
 	write_outputs(std::slice::from_ref(&plasma), "test_loft_04_closure_iterator_form");
 }
@@ -119,25 +118,13 @@ fn naca_points(c: f64, z: f64, n: usize) -> Vec<DVec3> {
 	pts
 }
 
-/// 閉多角形 (XY 平面) の shoelace 面積。
-fn polygon_area(pts: &[DVec3]) -> f64 {
-	let n = pts.len();
-	let mut a = 0.0;
-	for i in 0..n {
-		let p = pts[i];
-		let q = pts[(i + 1) % n];
-		a += p.x * q.y - q.x * p.y;
-	}
-	0.5 * a.abs()
-}
-
 fn naca_section(c: f64, z: f64) -> Vec<Edge> {
 	vec![Edge::bspline(&naca_points(c, z, SECTION_POINTS), BSplineEnd::NotAKnot).expect("NACA bspline section")]
 }
 
-/// 高さ `z` の断面面積の推定値: データ点の内接多角形。
-fn section_area(c: f64, z: f64) -> f64 {
-	polygon_area(&naca_points(c, z, SECTION_POINTS))
+/// Exact integral of the NACA thickness polynomial, independent of the spline.
+fn section_area(chord: f64, _z: f64) -> f64 {
+	chord * chord * 10.0 * 0.12 * (0.2969 * 2.0 / 3.0 - 0.1260 / 2.0 - 0.3516 / 3.0 + 0.2843 / 4.0 - 0.1036 / 5.0)
 }
 
 // ==================== (5) 2 断面 NACA 翼: 体積 vs テーパー prism 推定 ====================
@@ -153,9 +140,9 @@ fn test_loft_05_two_naca_sections_volume_sane() {
 	// 線形テーパー翼: A(z) ∝ c(z)² → V = span·A_root·(1+s+s²)/3, s = c_tip/c_root
 	let s = c_tip / c_root;
 	let expected = span * section_area(c_root, 0.0) * (1.0 + s + s * s) / 3.0;
-	let actual = wing.volume();
+	let actual = wing.volume().expect("volume integration");
 	let rel_err = (actual - expected).abs() / expected;
-	assert!(rel_err < 0.01, "wing volume {:.6} vs tapered-prism estimate {:.6} (relative error {:.4})", actual, expected, rel_err);
+	assert!(rel_err < 1e-5, "wing volume {:.6} vs tapered-prism estimate {:.6} (relative error {:.4})", actual, expected, rel_err);
 
 	// 断面中央付近の点は solid 内部
 	assert!(wing.contains(DVec3::new(0.4 * c_root, 0.0, 0.2)));
@@ -197,13 +184,42 @@ fn test_loft_07_ruled_matches_piecewise_estimate() {
 		let (a1, a2) = (section_area(w[0].0, w[0].1), section_area(w[1].0, w[1].1));
 		expected += (w[1].1 - w[0].1) / 3.0 * (a1 + a2 + (a1 * a2).sqrt());
 	}
-	let actual = ruled.volume();
+	let actual = ruled.volume().expect("volume integration");
 	let rel_err = (actual - expected).abs() / expected;
-	assert!(rel_err < 0.01, "ruled volume {:.6} vs piecewise frustum estimate {:.6} (relative error {:.4})", actual, expected, rel_err);
+	assert!(rel_err < 1e-5, "ruled volume {:.6} vs piecewise frustum estimate {:.6} (relative error {:.4})", actual, expected, rel_err);
 
 	// smooth 版も成功し、ruled と同程度の体積になる (補間の膨らみ分だけ差は出る)
 	let smooth = Solid::loft(&sections, false).expect("smooth loft should succeed");
-	let ratio = smooth.volume() / actual;
+	let ratio = smooth.volume().expect("volume integration") / actual;
 	assert!((0.85..1.15).contains(&ratio), "smooth/ruled volume ratio {:.4} out of sanity band", ratio);
-	println!("ruled = {:.6}, smooth = {:.6}, estimate = {:.6}", actual, smooth.volume(), expected);
+	println!("ruled = {:.6}, smooth = {:.6}, estimate = {:.6}", actual, smooth.volume().expect("volume integration"), expected);
+}
+
+#[test]
+fn knot_rich_prism_mass_properties_match_the_analytic_section() {
+	let height: f64 = 4.0;
+	let prism = Solid::loft(&[naca_section(1.0, 0.0), naca_section(1.0, height)], true).expect("prism");
+	let terms: [(f64, f64); 5] = [(0.2969, 0.5), (-0.1260, 1.0), (-0.3516, 2.0), (0.2843, 3.0), (-0.1036, 4.0)];
+	let x_moment = |order: f64| 1.2 * terms.iter().map(|(coefficient, power)| coefficient / (power + order + 1.0)).sum::<f64>();
+	let area = x_moment(0.0);
+	// Integral of y² over the section is 2/3 times the integral of half-thickness cubed.
+	let mut y_squared = 0.0;
+	for (a, pa) in terms {
+		for (b, pb) in terms {
+			for (c, pc) in terms {
+				y_squared += 2.0 / 3.0 * 0.6_f64.powi(3) * a * b * c / (pa + pb + pc + 1.0);
+			}
+		}
+	}
+	let volume = area * height;
+	assert!((prism.volume().expect("volume") / volume - 1.0).abs() < 1e-6);
+	let expected_center = DVec3::new(x_moment(1.0) / area, 0.0, height / 2.0);
+	assert!(prism.center().expect("center").distance(expected_center) < 1e-6);
+	let tensor = prism.inertia().expect("inertia");
+	let expected = DVec3::new(height * y_squared + area * height.powi(3) / 3.0, height * x_moment(2.0) + area * height.powi(3) / 3.0, height * (x_moment(2.0) + y_squared));
+	for (actual, expected) in [tensor.x_axis.x, tensor.y_axis.y, tensor.z_axis.z].into_iter().zip(expected.to_array()) {
+		assert!((actual / expected - 1.0).abs() < 1e-5, "inertia {actual} vs {expected}");
+	}
+	assert!((tensor.z_axis.x + x_moment(1.0) * height.powi(2) / 2.0).abs() < 1e-6);
+	assert!(tensor.x_axis.y.abs() < 1e-8 && tensor.y_axis.z.abs() < 1e-8);
 }

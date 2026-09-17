@@ -16,13 +16,13 @@ fn test_chamfer_cube_reduces_volume_and_area() {
 	let a = 10.0_f64;
 	let d = 1.0_f64;
 	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(a));
-	let original_volume = cube.volume();
-	let original_area = cube.area();
+	let original_volume = cube.volume().expect("volume integration");
+	let original_area = cube.area().expect("area integration");
 	let edges: Vec<_> = cube.iter_edge().collect();
 	let beveled = cube.chamfer_edges(d, edges).expect("chamfer should succeed");
 
-	assert!(beveled.volume() < original_volume, "chamfer must reduce volume: {} vs {}", beveled.volume(), original_volume);
-	assert!(beveled.area() < original_area, "chamfer must reduce area: {} vs {}", beveled.area(), original_area);
+	assert!(beveled.volume().expect("volume integration") < original_volume, "chamfer must reduce volume: {} vs {}", beveled.volume().expect("volume integration"), original_volume);
+	assert!(beveled.area().expect("area integration") < original_area, "chamfer must reduce area: {} vs {}", beveled.area().expect("area integration"), original_area);
 }
 
 #[test]
@@ -39,16 +39,16 @@ fn test_chamfer_cube_matches_analytical_volume() {
 	//   + 8 corner triple-intersections = 2 d³
 	//   = 6 d² (a − d)
 	let expected = a.powi(3) - 6.0 * d * d * (a - d);
-	let rel_err = (beveled.volume() - expected).abs() / expected;
-	assert!(rel_err < 1e-3, "chamfered cube volume {} vs analytical {} (rel err {})", beveled.volume(), expected, rel_err);
+	let rel_err = (beveled.volume().expect("volume integration") - expected).abs() / expected;
+	assert!(rel_err < 1e-3, "chamfered cube volume {} vs analytical {} (rel err {})", beveled.volume().expect("volume integration"), expected, rel_err);
 }
 
 #[test]
 fn test_chamfer_empty_edges_is_noop() {
 	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(5.0));
-	let original_volume = cube.volume();
+	let original_volume = cube.volume().expect("volume integration");
 	let unchanged = cube.chamfer_edges(0.5, std::iter::empty::<&cadrum::Edge>()).expect("empty chamfer is a no-op, not an error");
-	assert!((unchanged.volume() - original_volume).abs() < EPS, "no-op chamfer should preserve volume exactly, got {}", unchanged.volume());
+	assert!((unchanged.volume().expect("volume integration") - original_volume).abs() < EPS, "no-op chamfer should preserve volume exactly, got {}", unchanged.volume().expect("volume integration"));
 }
 
 #[test]

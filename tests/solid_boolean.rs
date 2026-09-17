@@ -42,7 +42,7 @@ fn test_union_all_connected() {
 	let c = cube(10.0, 10.0, 10.0, 6.0, 6.0, 6.0);
 	let s: Solid = [&a, &b, &c].into_iter().map(Boolean::from).reduce(|a, b| a + b).unwrap().build().unwrap();
 	// a と c は重なっていない場合がある (距離 6 vs 辺 10) — overlap あるので 1 個
-	assert!(s.volume() > a.volume(), "union volume should grow");
+	assert!(s.volume().expect("volume integration") > a.volume().expect("volume integration"), "union volume should grow");
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn test_union_olympic_rings_out_of_order() {
 	let out_of_order: Solid = [&ring1, &ring3, &ring5, &ring2, &ring4].into_iter().map(Boolean::from).reduce(|a, b| a + b).unwrap().build().unwrap();
 	let in_order: Solid = [&ring1, &ring2, &ring3, &ring4, &ring5].into_iter().map(Boolean::from).reduce(|a, b| a + b).unwrap().build().unwrap();
 
-	assert!((out_of_order.volume() - in_order.volume()).abs() < 1e-6, "order-independent: {} vs {}", out_of_order.volume(), in_order.volume());
+	assert!((out_of_order.volume().expect("volume integration") - in_order.volume().expect("volume integration")).abs() < 1e-6, "order-independent: {} vs {}", out_of_order.volume().expect("volume integration"), in_order.volume().expect("volume integration"));
 }
 
 // ==================== intersect (`*` / reduce) ====================
@@ -72,7 +72,7 @@ fn test_intersect_two_cubes() {
 	let a = cube(10.0, 10.0, 10.0, 0.0, 0.0, 0.0);
 	let b = cube(10.0, 10.0, 10.0, 5.0, 0.0, 0.0); // overlap 5×10×10 = 500
 	let s: Solid = [&a, &b].into_iter().map(Boolean::from).reduce(|x, y| x * y).unwrap().build().unwrap();
-	assert!((s.volume() - 500.0).abs() < 1e-3, "got {}", s.volume());
+	assert!((s.volume().expect("volume integration") - 500.0).abs() < 1e-3, "got {}", s.volume().expect("volume integration"));
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_intersect_sphere_with_multiple_cylinders() {
 
 	let multi: Solid = [&sphere, &cyl_x, &cyl_y, &cyl_z].into_iter().map(Boolean::from).reduce(|x, y| x * y).unwrap().build().unwrap();
 	// 中心の小さなボリュームのみ ≈ 2.4
-	assert!(multi.volume() > 0.0 && multi.volume() < 10.0, "expected small intersection volume, got {}", multi.volume());
+	assert!(multi.volume().expect("volume integration") > 0.0 && multi.volume().expect("volume integration") < 10.0, "expected small intersection volume, got {}", multi.volume().expect("volume integration"));
 }
 
 // ==================== subtract (`-`) ====================
@@ -109,7 +109,7 @@ fn test_subtract_sphere_with_multiple_holes() {
 	let multi: Solid = (&sphere - &hole_x - &hole_y - &hole_z).build().unwrap();
 	// V(sphere) ≈ 523.6, V(3 cylinders inside sphere) ≈ 81.9
 	// 期待: ≈ 441.7
-	assert!((multi.volume() - 441.7).abs() < 5.0, "got volume {}", multi.volume());
+	assert!((multi.volume().expect("volume integration") - 441.7).abs() < 5.0, "got volume {}", multi.volume().expect("volume integration"));
 }
 
 // ==================== 演算子混在 / 終端評価 ====================
@@ -121,13 +121,13 @@ fn test_operator_overloads() {
 	let b = Solid::cube(DVec3::ZERO, DVec3::splat(10.0)).translate(DVec3::new(5.0, 5.0, 5.0));
 
 	let u: Solid = (&a + &b).build().expect("a + b should yield one solid");
-	println!("a + b (union):     volume = {:.4}", u.volume());
+	println!("a + b (union):     volume = {:.4}", u.volume().expect("volume integration"));
 
 	let s: Solid = (&a - &b).build().expect("a - b should yield one solid");
-	println!("a - b (subtract):  volume = {:.4}", s.volume());
+	println!("a - b (subtract):  volume = {:.4}", s.volume().expect("volume integration"));
 
 	let i: Solid = (&a * &b).build().expect("a * b should yield one solid");
-	println!("a * b (intersect): volume = {:.4}", i.volume());
+	println!("a * b (intersect): volume = {:.4}", i.volume().expect("volume integration"));
 
 	// 非交差での intersect → build_vec で 0 個、build で NotOne(0)
 	let far = Solid::cube(DVec3::ZERO, DVec3::ONE).translate(DVec3::new(100.0, 0.0, 0.0));
@@ -141,10 +141,10 @@ fn test_operator_overloads() {
 #[test]
 fn test_singleton_build() {
 	let a = Solid::cube(DVec3::ZERO, DVec3::splat(10.0));
-	let expected = a.volume();
+	let expected = a.volume().expect("volume integration");
 	let b = std::iter::once(&a).map(Boolean::from).reduce(|x, y| x + y).unwrap(); // fold でも reduce でも同じ結果 (単一要素はそのまま)
 	let s: Solid = b.build().unwrap();
-	assert!((s.volume() - expected).abs() < 1e-6, "{} vs {}", s.volume(), expected);
+	assert!((s.volume().expect("volume integration") - expected).abs() < 1e-6, "{} vs {}", s.volume().expect("volume integration"), expected);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn test_build_direct() {
 	let clauses = vec![1, -3, 0, 2, -3, 0];
 	let v = Solid::boolean(solids.iter(), clauses).build_vec().unwrap();
 	// A∪B の体積は 15×10×10 = 1500、C を引くので減るはず
-	let total_volume: f64 = v.iter().map(|s| s.volume()).sum();
+	let total_volume: f64 = v.iter().map(|s| s.volume().expect("volume integration")).sum();
 	assert!(total_volume < 1500.0);
 	assert!(total_volume > 0.0);
 }

@@ -8,7 +8,11 @@ Only `cad-kernel` may depend on it. Do not add project or vessel policy here.
 
 Local additions bind OCCT BRep validity analysis and a pipe sweep driven by a
 scalar law. Absolute tessellation uses OCCT's surface-deflection controls and
-`BRepLib::UpdateDeflection`, with at most six refinements before refusal.
+`BRepLib::UpdateDeflection`. Refinement responds to measured chord error rather
+than a fixed pass count. It stops on convergence, an unchanged mesh across three
+passes, the kernel's resolution, or four million triangles before further
+refinement; errors retain requested/achieved deflection and native mesh status.
+The triangle limit bounds further refinement, not OCCT's allocation within a pass.
 Meshing exceptions are translated by CXX. These invoke OCCT algorithms and do
 not implement geometry locally. The deflection measurement samples the
 triangulation; it is not a certified global Hausdorff bound.
@@ -69,18 +73,52 @@ decomposition and triangulation take the kind as an argument. A BRep payload
 can therefore be read as shells without the `TopAbs_SOLID` filter that
 `Solid::read_brep` keeps. `cad-kernel` tags the archive with the kind it wrote.
 
-## Signal-to-exception translation
+## Native failures
 
-OCCT algorithms fault on some degenerate input instead of raising
-`Standard_Failure`: `BRepOffsetAPI_MakeOffsetShape` at a wall thickness of half
-the body extent, `BRepOffsetAPI_MakeFilling` over a boundary enclosing no area.
-OCCT's remedy is `OSD::SetSignal`, but `build.rs` body-stubs `OSD_signal.cxx`
-for every target, so in the linked library that call is a bare `ret`. The
-binding therefore installs the translation itself on POSIX targets: one
-`sigaction` for `SIGSEGV`, `SIGBUS` and `SIGFPE` whose handler throws the same
-OCCT exception types OCCT's own handler throws, so the existing
-`catch (const Standard_Failure&)` blocks turn the fault into an `Error`.
-Dispositions are process-wide, so the one installation covers callers that run
-algorithms off the main thread; floating-point traps stay disarmed, as they are
-under `OSD::SetSignal(false)`. Windows and wasm keep calling `OSD::SetSignal`
-and still abort on a fault until the stub is lifted.
+CXX translates ordinary `Standard_Failure` and C++ exceptions into Rust errors.
+The bridge installs no process-wide signal handlers and performs no long jumps
+past native destructors. A collinear filling boundary is identified through
+OCCT's principal line moments before its plate builder dereferences the absent
+initial surface. Collapsed offset results are refused as empty geometry.
+
+This is an in-process kernel, not isolation against arbitrary native memory
+corruption. A future crash-containment requirement needs a restartable process;
+a returned segmentation-fault error cannot make partially mutated native state safe.
+
+## Sweep geometry and numerical properties
+
+Auxiliary guides require `GuideCorrespondence::NormalPlane` or `ArcLength`.
+Normal-plane correspondence keeps sections normal to the spine; arc-length
+correspondence may tilt otherwise rigid sections. The latter must not be tested
+against area times spine length without accounting for that projection.
+Linear/boundary tolerance and angular tolerance remain separate; a requested
+linear tolerance no longer overwrites the angular tolerance.
+
+`patches/GeomFill_GuideTrihedronAC.cxx` is OCCT V8_0_1's implementation with two
+second-derivative corrections: normalization uses the squared first derivative,
+and the guide-parameter chain rule uses the squared station scaling. It is
+compiled into the bridge object, providing the complete class implementation
+before the static OCCT archive is needed. Both prebuilt and source builds get
+the same correction; no cached archive is edited. The version assertion requires
+reassessment when OCCT changes. The original LGPL header is retained; this
+upstream-derived file is not covered by cadrum's MIT license.
+
+Source: https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx
+
+The sweep builder checks its achieved approximation error and increases its
+segment budget if necessary, up to 1600 segments. The derivative correction
+allows the periodic-guide regression to meet its original construction accuracy
+at the default segment budget.
+
+Volume, area, centre and inertia queries now return `Result`. Adaptive Gauss
+integration is attempted first; volume properties fall back to span-aware
+Gauss–Kronrod if needed. The bridge checks the returned error estimate against
+1e-6 instead of discarding it. This is an integration estimate, not a certificate
+of shape accuracy or independent error bounds for every moment. Analytic and
+transformation tests cover the moments. The application caches accepted area
+and volume on its immutable shape, so public property reads remain infallible.
+
+Tests retain the 60-point NACA sections and use the independent analytic thickness
+integral. Normal-plane sweeps are checked against Pappus; an oblique guide has
+an analytic projected-area reference for arc-length mode. Absolute tessellation
+of the closed ring is exercised below the former 0.03 cutoff.

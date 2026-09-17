@@ -663,7 +663,7 @@ fn build_twisted_ribbon() -> Result<Solid, Error> {
 	// Flat rectangle (10:1 aspect) — circles or squares wouldn't reveal any twist.
 	let profile = Edge::polygon(&[DVec3::new(-2.0, -0.2, 0.0), DVec3::new(2.0, -0.2, 0.0), DVec3::new(2.0, 0.2, 0.0), DVec3::new(-2.0, 0.2, 0.0)])?;
 
-	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary(&[aux]))?;
+	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?;
 	Ok(ribbon.translate(DVec3::X * 12.0).color("green"))
 }
 
@@ -1103,7 +1103,7 @@ fn main() -> Result<(), cadrum::Error> {
 	println!("spine tube: faces={}  aux tube: faces={}", spine_tube.iter_face().count(), aux_tube.iter_face().count());
 	output(&[spine_tube, aux_tube], Some("_tubes"))?;
 	let prof = profile(2.0, 0.2)?.map(|v| v.align_z(spine.start_tangent(), DVec3::Y).translate(spine.start_point()));
-	let mevius = Solid::sweep(&prof, &[spine], ProfileOrient::Auxiliary(&[aux]))?.color("#2ebc71");
+	let mevius = Solid::sweep(&prof, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?.color("#2ebc71");
 	output(&[mevius], None)?;
 	return Ok(());
 }
@@ -1193,7 +1193,7 @@ needed:
 ```rust,no_run
 # use cadrum::{DVec3, Solid};
 let s = Solid::cube(DVec3::ZERO, DVec3::ONE).rotate_z(0.5).translate(DVec3::X);
-let v = s.volume();
+let v = s.volume().expect("volume integration");
 ```
 
 ## Errors

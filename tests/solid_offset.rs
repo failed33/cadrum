@@ -20,11 +20,11 @@ fn test_offset_01_sphere_outward_volume_matches_analytical() {
 	let grown = sphere.offset(t, sphere.iter_face(), 1.0e-6).expect("outward sphere offset should succeed");
 
 	let expected = 4.0 / 3.0 * PI * (r + t).powi(3);
-	let rel_err = (grown.volume() - expected).abs() / expected;
-	assert!(rel_err < 0.01, "offset sphere volume {:.6} vs analytical {:.6} (relative error {:.4})", grown.volume(), expected, rel_err);
+	let rel_err = (grown.volume().expect("volume integration") - expected).abs() / expected;
+	assert!(rel_err < 0.01, "offset sphere volume {:.6} vs analytical {:.6} (relative error {:.4})", grown.volume().expect("volume integration"), expected, rel_err);
 
 	// 体積比は ((r+t)/r)³
-	let ratio = grown.volume() / sphere.volume();
+	let ratio = grown.volume().expect("volume integration") / sphere.volume().expect("volume integration");
 	let expected_ratio = ((r + t) / r).powi(3);
 	assert!((ratio - expected_ratio).abs() / expected_ratio < 0.01, "volume ratio {:.6} vs ((r+t)/r)³ = {:.6}", ratio, expected_ratio);
 }
@@ -38,8 +38,8 @@ fn test_offset_02_sphere_inward_volume_matches_analytical() {
 	let shrunk = sphere.offset(t, sphere.iter_face(), 1.0e-6).expect("inward sphere offset should succeed");
 
 	let expected = 4.0 / 3.0 * PI * (r + t).powi(3);
-	let rel_err = (shrunk.volume() - expected).abs() / expected;
-	assert!(rel_err < 0.01, "inward offset sphere volume {:.6} vs analytical {:.6} (relative error {:.4})", shrunk.volume(), expected, rel_err);
+	let rel_err = (shrunk.volume().expect("volume integration") - expected).abs() / expected;
+	assert!(rel_err < 0.01, "inward offset sphere volume {:.6} vs analytical {:.6} (relative error {:.4})", shrunk.volume().expect("volume integration"), expected, rel_err);
 }
 
 // ==================== (3) 立方体: 外向き offset (Intersection join、角はシャープ) ====================
@@ -53,8 +53,8 @@ fn test_offset_03_cube_outward_volume_matches_analytical() {
 
 	// Intersection join: 隣接面が延長交差して角が保たれ、一辺 a+2t の立方体になる
 	let expected = (a + 2.0 * t).powi(3);
-	let rel_err = (grown.volume() - expected).abs() / expected;
-	assert!(rel_err < 0.01, "offset cube volume {:.6} vs analytical {:.6} (relative error {:.4})", grown.volume(), expected, rel_err);
+	let rel_err = (grown.volume().expect("volume integration") - expected).abs() / expected;
+	assert!(rel_err < 0.01, "offset cube volume {:.6} vs analytical {:.6} (relative error {:.4})", grown.volume().expect("volume integration"), expected, rel_err);
 }
 
 // ==================== (4) 薄板の過大な内向き offset → Err ====================
@@ -69,7 +69,7 @@ fn test_offset_04_thin_plate_inward_returns_offset_failed() {
 	match result {
 		Err(Error::Offset(msg)) => assert!(msg.contains("offset"), "got: {}", msg),
 		Err(other) => panic!("expected Error::Offset, got {:?}", other),
-		Ok(s) => panic!("thin-plate inward offset must fail, but produced a solid with volume {:.6}", s.volume()),
+		Ok(s) => panic!("thin-plate inward offset must fail, but produced a solid with volume {:.6}", s.volume().expect("volume integration")),
 	}
 }
 
@@ -83,7 +83,7 @@ fn test_offset_05_top_face_pad_extends_prism() {
 	assert_eq!(top.len(), 1);
 
 	let padded = cube.offset(5.0, top, 1.0e-6).expect("padding the top face should succeed");
-	assert!((padded.volume() - 1500.0).abs() < 1.0e-6, "volume {:.6} must be 10*10*15", padded.volume());
+	assert!((padded.volume().expect("volume integration") - 1500.0).abs() < 1.0e-6, "volume {:.6} must be 10*10*15", padded.volume().expect("volume integration"));
 	let bbox = padded.bounding_box();
 	assert!((bbox[0] - DVec3::ZERO).length() < 1.0e-6 && (bbox[1] - DVec3::new(10.0, 10.0, 15.0)).length() < 1.0e-6, "bbox must be the padded prism, got {:?}", bbox);
 }

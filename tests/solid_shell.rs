@@ -3,13 +3,13 @@ use cadrum::{DVec3, Solid};
 #[test]
 fn test_shell_cube_reduces_volume() {
 	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(10.0));
-	let original_volume = cube.volume();
+	let original_volume = cube.volume().expect("volume integration");
 
 	let open = cube.iter_face().next().unwrap();
 	let shelled = cube.shell(-0.5, [open]).expect("shell should succeed");
 
-	assert!(shelled.volume() > 0.0, "shelled solid must have positive volume");
-	assert!(shelled.volume() < original_volume, "shelling inward must reduce volume");
+	assert!(shelled.volume().expect("volume integration") > 0.0, "shelled solid must have positive volume");
+	assert!(shelled.volume().expect("volume integration") < original_volume, "shelling inward must reduce volume");
 }
 
 #[test]
@@ -19,7 +19,7 @@ fn test_shell_outward_produces_wall() {
 	// Positive thickness: wall grows outward. The original solid becomes the
 	// inner cavity of a 0.5-thick shell.
 	let shell = cube.shell(0.5, [open]).expect("shell outward should succeed");
-	assert!(shell.volume() > 0.0 && shell.volume() < 1000.0, "outer shell is wall material only, not the original cube");
+	assert!(shell.volume().expect("volume integration") > 0.0 && shell.volume().expect("volume integration") < 1000.0, "outer shell is wall material only, not the original cube");
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn test_shell_empty_open_faces_inward_seals_cavity() {
 	// Negative thickness + empty open_faces: sealed solid with an internal void.
 	// Expected wall-material volume = 10³ − 9³ = 271.
 	let sealed = cube.shell(-0.5, std::iter::empty::<&cadrum::Face>()).expect("inward empty-open shell should succeed");
-	assert!((sealed.volume() - 271.0).abs() < 1e-3, "inward empty shell volume = 10³ − 9³, got {}", sealed.volume());
+	assert!((sealed.volume().expect("volume integration") - 271.0).abs() < 1e-3, "inward empty shell volume = 10³ − 9³, got {}", sealed.volume().expect("volume integration"));
 }
 
 #[test]
@@ -46,16 +46,14 @@ fn test_shell_empty_open_faces_outward_seals_cavity() {
 	// Shell material = 300 + 7.5π + π/6 ≈ 324.086.
 	let sealed = cube.shell(0.5, std::iter::empty::<&cadrum::Face>()).expect("outward empty-open shell should succeed");
 	let expected = 300.0 + 7.5 * std::f64::consts::PI + std::f64::consts::PI / 6.0;
-	assert!((sealed.volume() - expected).abs() < 1e-3, "outward empty shell volume ≈ {expected:.3}, got {}", sealed.volume());
+	assert!((sealed.volume().expect("volume integration") - expected).abs() < 1e-3, "outward empty shell volume ≈ {expected:.3}, got {}", sealed.volume().expect("volume integration"));
 }
 
 #[test]
 fn test_shell_half_extent_thickness_is_refused() {
 	let side = 10.0;
 	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(side));
-	// Hollowing by half the extent collapses the inner shell onto itself. OCCT's
-	// offset faults on it instead of raising, so without the binding's
-	// signal-to-exception translation this call aborts the process.
+	// At half the extent the offset has no remaining shell to bound a cavity.
 	let error = cube.shell(-side / 2.0, std::iter::empty::<&cadrum::Face>()).expect_err("a wall as thick as the half-extent must be refused");
 	assert!(matches!(error, cadrum::Error::Shell(_)), "expected Error::Shell, got {error:?}");
 }

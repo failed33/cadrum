@@ -143,27 +143,27 @@ impl Shape {
 		ffi::shape_is_valid(&self.inner).map_err(|error| Error::Validation(error.to_string()))
 	}
 
-	pub fn volume(&self) -> f64 {
-		ffi::shape_volume(&self.inner)
+	pub fn volume(&self) -> Result<f64, Error> {
+		ffi::shape_volume(&self.inner).map_err(|error| Error::Properties(error.to_string()))
 	}
 
-	pub fn area(&self) -> f64 {
-		ffi::shape_surface_area(&self.inner)
+	pub fn area(&self) -> Result<f64, Error> {
+		ffi::shape_surface_area(&self.inner).map_err(|error| Error::Properties(error.to_string()))
 	}
 
-	pub fn center(&self) -> DVec3 {
+	pub fn center(&self) -> Result<DVec3, Error> {
 		let (mut x, mut y, mut z) = (0.0_f64, 0.0_f64, 0.0_f64);
-		ffi::shape_center_of_mass(&self.inner, &mut x, &mut y, &mut z);
-		DVec3::new(x, y, z)
+		ffi::shape_center_of_mass(&self.inner, &mut x, &mut y, &mut z).map_err(|error| Error::Properties(error.to_string()))?;
+		Ok(DVec3::new(x, y, z))
 	}
 
-	pub fn inertia(&self) -> DMat3 {
+	pub fn inertia(&self) -> Result<DMat3, Error> {
 		let (mut m00, mut m01, mut m02) = (0.0_f64, 0.0_f64, 0.0_f64);
 		let (mut m10, mut m11, mut m12) = (0.0_f64, 0.0_f64, 0.0_f64);
 		let (mut m20, mut m21, mut m22) = (0.0_f64, 0.0_f64, 0.0_f64);
-		ffi::shape_inertia_tensor(&self.inner, &mut m00, &mut m01, &mut m02, &mut m10, &mut m11, &mut m12, &mut m20, &mut m21, &mut m22);
+		ffi::shape_inertia_tensor(&self.inner, &mut m00, &mut m01, &mut m02, &mut m10, &mut m11, &mut m12, &mut m20, &mut m21, &mut m22).map_err(|error| Error::Properties(error.to_string()))?;
 		// OCCT fills row-major; `from_cols_array` is column-major.
-		DMat3::from_cols_array(&[m00, m10, m20, m01, m11, m21, m02, m12, m22])
+		Ok(DMat3::from_cols_array(&[m00, m10, m20, m01, m11, m21, m02, m12, m22]))
 	}
 
 	pub fn contains(&self, point: DVec3) -> bool {
@@ -216,10 +216,7 @@ impl Shape {
 	/// faces, and each triangle names the face it came from.
 	pub fn mesh<'a>(shapes: impl IntoIterator<Item = &'a Shape>, options: Tessellation) -> Result<Mesh, Error> {
 		let compound = Shape::compound(shapes);
-		let data = ffi::mesh_shape(&compound.inner, options.deflection_linear, options.deflection_angular, options.relative_linear).map_err(|_| Error::Tesselation)?;
-		if !data.success {
-			return Err(Error::Tesselation);
-		}
+		let data = ffi::mesh_shape(&compound.inner, options.deflection_linear, options.deflection_angular, options.relative_linear).map_err(|error| Error::Tessellation(error.to_string()))?;
 		let vertex_count = data.vertices.len() / 3;
 		let vertices: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.vertices[i * 3], data.vertices[i * 3 + 1], data.vertices[i * 3 + 2])).collect();
 		let normals: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.normals[i * 3], data.normals[i * 3 + 1], data.normals[i * 3 + 2])).collect();

@@ -20,11 +20,11 @@ fn test_cube_mass_properties_match_analytical() {
 	let a = 10.0_f64;
 	let cube = Solid::cube(DVec3::ZERO, DVec3::splat(a));
 
-	assert!((cube.volume() - a.powi(3)).abs() < EPS);
-	assert!((cube.area() - 6.0 * a.powi(2)).abs() < EPS);
-	assert!((cube.center() - DVec3::splat(a / 2.0)).length() < EPS);
+	assert!((cube.volume().expect("volume integration") - a.powi(3)).abs() < EPS);
+	assert!((cube.area().expect("area integration") - 6.0 * a.powi(2)).abs() < EPS);
+	assert!((cube.center().expect("center integration") - DVec3::splat(a / 2.0)).length() < EPS);
 
-	let i = cube.inertia();
+	let i = cube.inertia().expect("inertia integration");
 	let expected_diag = 2.0 * a.powi(5) / 3.0;
 	let expected_off = a.powi(5) / 4.0;
 	// Diagonals are positive and equal for a symmetric cube.
@@ -48,11 +48,11 @@ fn test_sphere_mass_properties_match_analytical() {
 	let sphere = Solid::sphere(r);
 
 	let pi = std::f64::consts::PI;
-	assert!((sphere.volume() - 4.0 / 3.0 * pi * r.powi(3)).abs() < 1e-2);
-	assert!((sphere.area() - 4.0 * pi * r.powi(2)).abs() < 1e-2);
-	assert!(sphere.center().length() < 1e-3, "sphere COM should be at origin, got {:?}", sphere.center());
+	assert!((sphere.volume().expect("volume integration") - 4.0 / 3.0 * pi * r.powi(3)).abs() < 1e-2);
+	assert!((sphere.area().expect("area integration") - 4.0 * pi * r.powi(2)).abs() < 1e-2);
+	assert!(sphere.center().expect("center integration").length() < 1e-3, "sphere COM should be at origin, got {:?}", sphere.center().expect("center integration"));
 
-	let i = sphere.inertia();
+	let i = sphere.inertia().expect("inertia integration");
 	let expected_diag = 8.0 / 15.0 * pi * r.powi(5);
 	assert!((i.col(0).x - expected_diag).abs() < 1e-1, "I_xx = {}, expected {expected_diag}", i.col(0).x);
 	assert!((i.col(1).y - expected_diag).abs() < 1e-1);

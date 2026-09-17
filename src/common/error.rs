@@ -12,7 +12,10 @@ pub enum Error {
 	Algorithm(String),
 
 	/// Triangulation/meshing failed.
-	Tesselation,
+	Tessellation(String),
+
+	/// Numerical property integration failed to converge.
+	Properties(String),
 
 	/// Boolean operation (fuse/cut/common) failed.
 	Boolean,
@@ -60,7 +63,8 @@ impl std::fmt::Display for Error {
 			Error::Validation(msg) => write!(f, "Validation failed: {msg}"),
 			Error::Io(e) => write!(f, "IO failed: {e}"),
 			Error::Algorithm(msg) => write!(f, "Algorithm failed: {msg}"),
-			Error::Tesselation => write!(f, "Tesselation failed"),
+			Error::Tessellation(message) => write!(f, "Tessellation failed: {message}"),
+			Error::Properties(message) => write!(f, "Property integration failed: {message}"),
 			Error::Boolean => write!(f, "Boolean operation failed"),
 			Error::NotOne(n) => write!(f, "Expected exactly one resulting Solid, got {n}"),
 			Error::Edge(msg) => write!(f, "Edge failed: {msg}"),

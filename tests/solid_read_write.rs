@@ -26,7 +26,7 @@ fn read_brep_with_trailing_garbage() {
 	match &result {
 		Ok(solids) => {
 			assert!(!solids.is_empty(), "should read at least one solid");
-			let vol = solids[0].volume();
+			let vol = solids[0].volume().expect("volume integration");
 			assert!((vol - 1.0).abs() < 1e-6, "unit box volume should be ~1.0, got {}", vol);
 			println!("BINARY: OK — read {} solid(s), volume={:.6}, brep_len={}, total={}", solids.len(), vol, brep_len, brep_len + 1024);
 		}

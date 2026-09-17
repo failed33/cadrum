@@ -148,7 +148,7 @@ impl Solid {
 
 impl std::fmt::Debug for Solid {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "Solid({}, center={:?}, faces={}, edges={})", self.id(), self.center(), self.iter_face().count(), self.iter_edge().count())
+		write!(f, "Solid({}, faces={}, edges={})", self.id(), self.iter_face().count(), self.iter_edge().count())
 	}
 }
 
@@ -254,14 +254,14 @@ impl SolidStruct for Solid {
 		let section = Self::wire(profile, refuse)?;
 		let spine = Self::wire(spine, refuse)?;
 		let auxiliary = match orient {
-			ProfileOrient::Auxiliary(edges) => Some(Self::wire(edges, refuse)?),
+			ProfileOrient::Auxiliary { guide, .. } => Some(Self::wire(guide, refuse)?),
 			_ => None,
 		};
 		let frame = match orient {
 			ProfileOrient::Fixed => Frame::Fixed,
 			ProfileOrient::Torsion => Frame::Frenet,
 			ProfileOrient::Up(up) => Frame::Up(up),
-			ProfileOrient::Auxiliary(_) => Frame::Auxiliary(auxiliary.as_ref().expect("auxiliary wire built above")),
+			ProfileOrient::Auxiliary { correspondence, .. } => Frame::Auxiliary { guide: auxiliary.as_ref().expect("auxiliary wire built above"), correspondence },
 		};
 		let swept = apply(Algorithm::PipeShell { spine: &spine, sections: &[&section], frame, law: &[], tolerance: None, solid: true }).map_err(|error| refuse(error.to_string()))?;
 		Self::single(swept, refuse).map(|(shape, _)| Self::built(shape))
@@ -437,19 +437,19 @@ impl SolidStruct for Solid {
 
 	// ==================== Queries ====================
 
-	fn volume(&self) -> f64 {
+	fn volume(&self) -> Result<f64, Error> {
 		self.shape.volume()
 	}
 
-	fn area(&self) -> f64 {
+	fn area(&self) -> Result<f64, Error> {
 		self.shape.area()
 	}
 
-	fn center(&self) -> DVec3 {
+	fn center(&self) -> Result<DVec3, Error> {
 		self.shape.center()
 	}
 
-	fn inertia(&self) -> glam::DMat3 {
+	fn inertia(&self) -> Result<glam::DMat3, Error> {
 		self.shape.inertia()
 	}
 
