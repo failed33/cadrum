@@ -16,6 +16,14 @@ pub struct Face {
 }
 
 impl Face {
+	/// Point and first derivatives on the underlying surface's normalized domain.
+	/// This evaluates the surface, not the face's trimming wires.
+	pub fn sample(&self, u: f64, v: f64) -> Result<[DVec3; 3], crate::Error> {
+		let mut coordinates = [0.0; 9];
+		ffi::face_sample(&self.inner, u, v, &mut coordinates).map_err(|error| crate::Error::Algorithm(error.to_string()))?;
+		Ok(std::array::from_fn(|index| DVec3::new(coordinates[3 * index], coordinates[3 * index + 1], coordinates[3 * index + 2])))
+	}
+
 	/// Create a Face wrapping a `TopoDS_Face`.
 	pub(crate) fn new(inner: cxx::UniquePtr<ffi::TopoDS_Face>) -> Self {
 		Face { inner, edges: OnceLock::new() }

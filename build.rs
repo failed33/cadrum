@@ -14,6 +14,7 @@ const BUILD_REVISION: &str = "rev2";
 /// is refused before anything is extracted, and a target without an entry is
 /// refused unless `CADRUM_PREBUILT_SHA256` names its digest. Update alongside
 /// `OCCT_VERSION`/`BUILD_REVISION`.
+#[cfg(not(feature = "source"))]
 const PREBUILT_SHA256: &[(&str, &str)] = &[
 	("aarch64-apple-darwin", "d9e0f3b34e6fb3599a6be5f143e775b0e04953c3fcef634cc0f5d55e0ee16904"),
 	("aarch64-unknown-linux-gnu", "27aa85259d9fcdaf0b3c4418821f7adbcdbad639eb0851eb3ca41b876dac038d"),
@@ -113,42 +114,34 @@ fn cargo_target_dir(target: &str) -> PathBuf {
 fn resolve_occt(effective_root: &Path, target: &str) -> Vec<PathBuf> {
 	println!("cargo:rerun-if-changed={}", effective_root.display());
 
-	match find_occt_whitelist(effective_root) {
-		Some(dirs) => return dirs,
-		None => {
-			#[cfg(feature = "source")]
-			{
-				eprintln!("cargo:warning=OCCT cache miss at {} — building from source (this may take 10-30 minutes)", effective_root.display());
-				return source::occt_from_source(effective_root).expect(&format!(
-					"\nFailed to build OCCT from source for target `{}`.\n\
-					 Check that a C/C++ toolchain and CMake are installed and on PATH,\n\
-					 then re-run:\n\
-					 \n    cargo build --features source\n",
-					target
-				));
-			}
-			#[cfg(not(feature = "source"))]
-			{
-				return occt_from_prebuilt(effective_root, target).expect(&format!(
-					"\nFailed to download prebuilt OCCT for target `{}`.\n\
-					 See README for the list of supported prebuilt targets, or enable\n\
-					 the `source` feature to build OCCT from upstream sources:\n\
-					 \n    cargo build --features source\n",
-					target
-				));
-			}
-		}
+	if env::var_os("OCCT_ROOT").is_some() {
+		return find_occt_install(effective_root).expect("OCCT_ROOT must contain the OCCT headers and libraries required by the enabled features");
+	}
+
+	#[cfg(feature = "source")]
+	{
+		source::occt_from_source(effective_root).unwrap_or_else(|| panic!("Failed to build OCCT from source for target `{target}`; check the C/C++ toolchain and CMake output"))
+	}
+	#[cfg(not(feature = "source"))]
+	{
+		find_occt_whitelist(effective_root).or_else(|| occt_from_prebuilt(effective_root, target)).unwrap_or_else(|| panic!("Failed to download prebuilt OCCT for target `{target}`; enable the `source` feature to build from source"))
 	}
 }
 
+fn find_occt_install(occt_root: &Path) -> Option<Vec<PathBuf>> {
+	let pick = |cands: &[PathBuf]| cands.iter().find(|p| p.is_dir()).cloned();
+	let include = pick(&[occt_root.join("include/opencascade"), occt_root.join("inc"), occt_root.join("include")])?;
+	let lib = pick(&[occt_root.join("lib"), occt_root.join("win64/gcc/lib"), occt_root.join("win64/clang/lib"), occt_root.join("win64/vc14/lib")])?;
+	(include.join("Standard_Version.hxx").is_file() && OCC_LIBS.iter().all(|name| lib.join(format!("lib{name}.a")).is_file() || lib.join(format!("{name}.lib")).is_file())).then_some(vec![include, lib])
+}
+
 fn find_occt_whitelist(occt_root: &Path) -> Option<Vec<PathBuf>> {
-	let pick = |cands: &[PathBuf]| cands.iter().find(|p| p.exists()).cloned();
-	// LICENSE_LGPL_21.txt / OCCT_LGPL_EXCEPTION.txt live at the install root on the
-	// Windows CMake layout, but under share/doc/opencascade on the Unix layout used by
-	// our Linux/wasm cross builds (OCCT CMakeLists.txt INSTALL_DIR_DOC).
-	let contains = |parents: &[PathBuf], prefx: &str| -> Option<PathBuf> { parents.iter().find_map(|parent| std::fs::read_dir(parent).ok()?.filter_map(Result::ok).find_map(|e| e.file_name().to_string_lossy().contains(prefx).then_some(e.path()))) };
-	let doc_dir = occt_root.join("share").join("doc").join("opencascade");
-	Some([pick(&[occt_root.join("include").join("opencascade"), occt_root.join("inc"), occt_root.join("include")])?, pick(&[occt_root.join("lib"), occt_root.join("win64").join("gcc").join("lib"), occt_root.join("win64").join("clang").join("lib"), occt_root.join("win64").join("vc14").join("lib")])?, contains(&[occt_root.to_path_buf()], "OCCT")?, contains(&[occt_root.to_path_buf(), doc_dir.clone()], "LICENSE")?, contains(&[occt_root.to_path_buf(), doc_dir], "EXCEPTION")?].to_vec())
+	let mut paths = find_occt_install(occt_root)?;
+	let matching_file = |parents: &[PathBuf], token: &str| -> Option<PathBuf> { parents.iter().find_map(|parent| std::fs::read_dir(parent).ok()?.filter_map(Result::ok).find_map(|entry| (entry.file_type().ok()?.is_file() && entry.file_name().to_string_lossy().contains(token)).then_some(entry.path()))) };
+	let source_dir = std::fs::read_dir(occt_root).ok()?.filter_map(Result::ok).find_map(|entry| (entry.file_type().ok()?.is_dir() && entry.file_name().to_string_lossy().starts_with("OCCT")).then_some(entry.path()))?;
+	let doc_dirs = [occt_root.to_path_buf(), occt_root.join("share/doc/opencascade")];
+	paths.extend([source_dir, matching_file(&doc_dirs, "LICENSE")?, matching_file(&doc_dirs, "EXCEPTION")?]);
+	Some(paths)
 }
 
 /// OCCT toolkits to link against (OCCT 7.8+ / 8.x naming).
@@ -243,7 +236,6 @@ fn link_occt_libraries(occt_include: &Path, occt_lib_dir: &Path, target: &str) {
 	println!("cargo:rerun-if-changed=src/ffi.rs");
 	println!("cargo:rerun-if-changed=src/ffi.h");
 	println!("cargo:rerun-if-changed=src/ffi.cpp");
-	println!("cargo:rerun-if-changed=patches/GeomFill_GuideTrihedronAC.cxx");
 }
 
 /// Provide OCCT into `effective_root` by downloading a prebuilt tarball for `target`.
@@ -302,7 +294,7 @@ fn verified_bytes(mut reader: Box<dyn std::io::Read>, expected_sha256: &str) -> 
 	reader.read_to_end(&mut bytes).map_err(|e| format!("download failed: {e}"))?;
 	let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
 	if !actual.eq_ignore_ascii_case(expected_sha256) {
-		return Err(format!("prebuilt OCCT digest mismatch: expected sha256 {expected_sha256}, downloaded {actual}"));
+		return Err(format!("OCCT archive digest mismatch: expected sha256 {expected_sha256}, downloaded {actual}"));
 	}
 	Ok(bytes)
 }

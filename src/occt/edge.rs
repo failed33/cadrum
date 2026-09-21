@@ -9,6 +9,11 @@ pub struct Edge {
 }
 
 impl Edge {
+	/// Whether topology traverses this edge opposite to its curve parameter.
+	pub fn is_reversed(&self) -> bool {
+		ffi::edge_is_reversed(&self.inner)
+	}
+
 	/// Interpolate with an explicit OCCT coincidence tolerance.
 	pub fn bspline_with_tolerance<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd, tolerance: f64) -> Result<Self, Error> {
 		let pts: Vec<DVec3> = points.into_iter().copied().collect();

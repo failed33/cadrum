@@ -250,19 +250,14 @@ impl SolidStruct for Solid {
 
 	// ==================== Sweep ====================
 
-	fn sweep<'a, 'b, 'c>(profile: impl IntoIterator<Item = &'a Edge>, spine: impl IntoIterator<Item = &'b Edge>, orient: ProfileOrient<'c>) -> Result<Self, Error> {
+	fn sweep<'a, 'b>(profile: impl IntoIterator<Item = &'a Edge>, spine: impl IntoIterator<Item = &'b Edge>, orient: ProfileOrient) -> Result<Self, Error> {
 		let refuse = |message: String| Error::Sweep(format!("profile could not be swept along the spine: {message}"));
 		let section = Self::wire(profile, refuse)?;
 		let spine = Self::wire(spine, refuse)?;
-		let auxiliary = match orient {
-			ProfileOrient::Auxiliary { guide, .. } => Some(Self::wire(guide, refuse)?),
-			_ => None,
-		};
 		let frame = match orient {
 			ProfileOrient::Fixed => Frame::Fixed,
 			ProfileOrient::Torsion => Frame::Frenet,
 			ProfileOrient::Up(up) => Frame::Up(up),
-			ProfileOrient::Auxiliary { correspondence, .. } => Frame::Auxiliary { guide: auxiliary.as_ref().expect("auxiliary wire built above"), correspondence },
 		};
 		let swept = apply(Algorithm::PipeShell { spine: &spine, sections: &[&section], frame, law: &[], tolerance: None, solid: true }).map_err(|error| refuse(error.to_string()))?;
 		Self::single(swept, refuse).map(|(shape, _)| Self::built(shape))

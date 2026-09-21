@@ -1,7 +1,10 @@
 # Surface Editor binding patch
 
 Upstream: https://github.com/lzpel/cadrum, crates.io release 0.8.18.
+Maintained fork: https://github.com/failed33/cadrum (the `vendor/cadrum` submodule).
 Upstream source and MIT license are retained. OCCT has its own license.
+OCCT is downloaded separately; the `patches/` files modify that dependency,
+while changes to Cadrum itself are made directly in this fork.
 
 This copy allows adding missing bindings without changing Cargo registry files.
 Only `cad-kernel` may depend on it. Do not add project or vessel policy here.
@@ -87,41 +90,27 @@ a returned segmentation-fault error cannot make partially mutated native state s
 
 ## Sweep geometry and numerical properties
 
-Auxiliary guides require `GuideCorrespondence::NormalPlane` or `ArcLength`.
-Normal-plane correspondence keeps sections normal to the spine; arc-length
-correspondence may tilt otherwise rigid sections. The latter must not be tested
-against area times spine length without accounting for that projection.
-Linear/boundary tolerance and angular tolerance remain separate; a requested
-linear tolerance no longer overwrites the angular tolerance.
+The application links the published OCCT 8.0.1 rev2 libraries. Our fork adds no
+OCCT source patches or replacement native classes. Cadrum's upstream optional
+`source` feature remains available, but the application does not enable it.
 
-`patches/GeomFill_GuideTrihedronAC.cxx` is OCCT V8_0_1's implementation with two
-second-derivative corrections: normalization uses the squared first derivative,
-and the guide-parameter chain rule uses the squared station scaling. It is
-compiled into the bridge object, providing the complete class implementation
-before the static OCCT archive is needed. Both prebuilt and source builds get
-the same correction; no cached archive is edited. The version assertion requires
-reassessment when OCCT changes. The original LGPL header is retained; this
-upstream-derived file is not covered by cadrum's MIT license.
+Auxiliary-guide frames and their correspondence modes have been removed from
+this fork's API, examples and tests. They had no application consumer and their
+extended accuracy contract required a private OCCT derivative correction.
+Fixed, Frenet, corrected-Frenet and fixed-binormal frames remain supported.
+The sweep builder retains its construction-error check and bounded segment
+budget; unsupported geometry returns an error rather than changing the frame.
 
-Source: https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx
+Native integral queries remain fallible estimates using OCCT's public adaptive
+integration API. They are not certified error bounds. The application exposes
+these only through `cad_kernel::testing::ShapeMeasurements` under `test-support`,
+for fixtures with independently known geometry. There is no production CAD
+mass-properties API. Spline-profile extrusion tests compare the tessellated
+geometry against independently sampled profile area and perimeter instead.
 
-The sweep builder checks its achieved approximation error and increases its
-segment budget if necessary, up to 1600 segments. The derivative correction
-allows the periodic-guide regression to meet its original construction accuracy
-at the default segment budget.
-
-Volume, area, centre and inertia queries now return `Result`. Adaptive Gauss
-integration is attempted first; volume properties fall back to span-aware
-Gauss–Kronrod if needed. The bridge checks the returned error estimate against
-1e-6 instead of discarding it. This is an integration estimate, not a certificate
-of shape accuracy or independent error bounds for every moment. Analytic and
-transformation tests cover the moments. The application caches accepted area
-and volume on its immutable shape, so public property reads remain infallible.
-
-Tests retain the 60-point NACA sections and use the independent analytic thickness
-integral. Normal-plane sweeps are checked against Pappus; an oblique guide has
-an analytic projected-area reference for arc-length mode. Absolute tessellation
-of the closed ring is exercised below the former 0.03 cutoff.
+The upstream missed-interval defect remains reproducible in
+`diagnostics/spline-integral.cpp`; see `diagnostics/README.md`. It is deliberately
+not repaired by topology conversion, a custom integrator or patched OCCT.
 
 ## Boolean expression ownership
 
@@ -142,3 +131,13 @@ The former raw DIMACS `Solid::boolean` entry and two-group algorithm row are rem
 Use `Boolean` operators or `Expression` with `Algorithm::Boolean`. Empty expressions
 build an empty vector; `build()` still requires one solid. Errors retain their native
 cause, and result pieces share one immutable history allocation.
+
+
+## Tessellation correspondence
+
+Native mesh export carries the traversed face occurrence per triangle alongside
+its native face ID. Occurrence order distinguishes located uses of shared
+native topology; consumers do not infer it from triangle connectivity. Mesh
+edge ranges retain each topological edge's half-open point range, excluding
+NaN separators and retaining empty ranges for unsampled/degenerate edges.
+These keys belong to one tessellation and are not persistent shape identities.

@@ -71,6 +71,11 @@ std::unique_ptr<TopoDS_Shape> transform_rotate(
 bool shape_is_null(const TopoDS_Shape& shape);
 // `BRep_Tool::IsClosed`: every edge of the shape is shared by two faces.
 bool shape_is_closed(const TopoDS_Shape& shape);
+std::unique_ptr<std::vector<TopoDS_Edge>> wire_ordered_edges(const TopoDS_Shape& shape);
+bool edge_is_reversed(const TopoDS_Edge& edge);
+std::unique_ptr<TopoDS_Shape> wire_planar_region(const TopoDS_Shape& shape, double tolerance,
+    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz);
+bool planar_regions_coincide(const TopoDS_Shape& left, const TopoDS_Shape& right);
 // Topological kind as a stable code, mirrored by Rust's `ShapeKind`:
 // 0 null, 1 compound, 2 compsolid, 3 solid, 4 shell, 5 face, 6 wire, 7 edge,
 // 8 vertex, 9 anything else. Mapped explicitly so the wire format does not
@@ -280,6 +285,13 @@ bool face_project_point(const TopoDS_Face& face,
     double px, double py, double pz,
     double& cpx, double& cpy, double& cpz,
     double& nx, double& ny, double& nz);
+
+
+std::unique_ptr<TopoDS_Shape> make_bspline_solid_with_tolerance(
+    rust::Slice<const double> coords, uint32_t nu, uint32_t nv,
+    bool u_periodic, double tolerance, double sewing_tolerance);
+
+void face_sample(const TopoDS_Face& face, double u_fraction, double v_fraction, rust::Slice<double> result);
 
 } // namespace cadrum
 

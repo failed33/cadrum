@@ -556,7 +556,6 @@ cargo run --example 07_sweep
 
 ```rust,no_run
 //! Sweep showcase: M2 screw (helix spine) + U-shaped pipe (line+arc+line spine)
-//! + twisted ribbon (`Auxiliary` aux-spine mode).
 //!
 //! `ProfileOrient` controls how the profile is oriented as it travels along the spine:
 //!
@@ -572,9 +571,7 @@ cargo run --example 07_sweep
 //!   tangent–`axis` plane. Suited for roads/rails/pipes that must preserve a
 //!   gravity direction. On a helix, `Up(helix_axis)` is equivalent to `Torsion`.
 //!   Fails when the tangent becomes parallel to `axis`.
-//! - `Auxiliary(aux_spine)`: profile's tracked axis points from the main spine
-//!   toward a parallel auxiliary spine. Arbitrary twist control — e.g. a
-//!   helical `aux_spine` on a straight `spine` produces a twisted ribbon.
+
 
 use cadrum::{DVec3, Edge, Error, ProfileOrient, Solid};
 
@@ -645,37 +642,9 @@ fn build_u_pipe() -> Result<Solid, Error> {
 	Ok(pipe.translate(DVec3::X * 6.0).color("blue"))
 }
 
-// ==================== Component 3: Auxiliary-spine twisted ribbon ====================
-
-// Sweeping a straight spine with `Auxiliary(&[helix])` rotates the tracked
-// axis of the profile at each point to face the corresponding helix point.
-// A pitch=h helix makes exactly one 360° turn over [0, h], so a flat
-// rectangular profile becomes a ribbon twisted once. With `Fixed` or
-// `Torsion` the profile wouldn't rotate along a straight spine — visible
-// twist is therefore proof that Auxiliary is in effect.
-fn build_twisted_ribbon() -> Result<Solid, Error> {
-	let h = 8.0;
-	let aux_r = 3.0;
-
-	let spine = Edge::line(DVec3::ZERO, DVec3::Z * h)?;
-	let aux = Edge::helix(aux_r, h, h, DVec3::Z, DVec3::X)?;
-
-	// Flat rectangle (10:1 aspect) — circles or squares wouldn't reveal any twist.
-	let profile = Edge::polygon(&[DVec3::new(-2.0, -0.2, 0.0), DVec3::new(2.0, -0.2, 0.0), DVec3::new(2.0, 0.2, 0.0), DVec3::new(-2.0, 0.2, 0.0)])?;
-
-	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?;
-	Ok(ribbon.translate(DVec3::X * 12.0).color("green"))
-}
-
-// ==================== main: side-by-side layout ====================
-//
-// Each builder places its component at its final world position (screw at
-// origin, U-pipe at x=6, ribbon at x=12) and applies its color, so main
-// just concatenates them.
-
 fn main() -> Result<(), Error> {
 	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap();
-	let all = [build_m2_screw()?, build_u_pipe()?, build_twisted_ribbon()?];
+	let all = [build_m2_screw()?, build_u_pipe()?];
 
 	Solid::write_step(&all, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
 
@@ -1068,70 +1037,6 @@ fn main() -> Result<(), cadrum::Error> {
 Output: [13_sew.png](https://lzpel.github.io/cadrum/13_sew.png) | [13_sew.step](https://lzpel.github.io/cadrum/13_sew.step) | [13_sew.glb](https://lzpel.github.io/cadrum/13_sew.glb) | [13_sew.stl](https://lzpel.github.io/cadrum/13_sew.stl) | [13_sew.svg](https://lzpel.github.io/cadrum/13_sew.svg)
 
 <img src='https://lzpel.github.io/cadrum/13_sew.svg' alt='13_sew' width='360'/>
-
-#### Moebius
-
-mevius using BSplineEnd::Periodic and ProfileOrient::Auxiliary. Mevius but it's twisted more.
-
-```sh
-cargo run --example 14_moebius
-```
-
-```rust,no_run
-//! mevius using BSplineEnd::Periodic and ProfileOrient::Auxiliary. Mevius but it's twisted more.
-
-use cadrum::{BSplineEnd, DVec3, Edge, ProfileOrient, Solid};
-use std::f64::consts::TAU;
-
-fn main() -> Result<(), cadrum::Error> {
-	let guided_spine = |phi: f64| {
-		let p = DVec3::new(10., 0.0, 0.0);
-		let g = p + 2. / 2. * DVec3::X;
-		[p, (g - p).rotate_y(phi * 2.) + p].map(|v| v.rotate_z(phi))
-	};
-	const SIZE: usize = 10;
-	let v: [[DVec3; 2]; SIZE] = std::array::from_fn(|i| guided_spine(TAU * i as f64 / SIZE as f64));
-	let spine = Edge::bspline(&v.map(|a| a[0])[..SIZE], BSplineEnd::Periodic)?;
-	let aux = Edge::bspline(&v.map(|a| a[1])[..SIZE], BSplineEnd::Periodic)?;
-
-	let tube = |curve: &Edge| -> Result<Solid, cadrum::Error> {
-		let profile = Edge::circle(0.1, DVec3::Z)?;
-		Solid::sweep([&profile.align_z(curve.start_tangent(), DVec3::Z).translate(curve.start_point())], [curve], ProfileOrient::Up(DVec3::Z))
-	};
-	let spine_tube = tube(&spine)?.color("#4a90d9");
-	let aux_tube = tube(&aux)?.color("#e67e22");
-	println!("spine tube: faces={}  aux tube: faces={}", spine_tube.iter_face().count(), aux_tube.iter_face().count());
-	output(&[spine_tube, aux_tube], Some("_tubes"))?;
-	let prof = profile(2.0, 0.2)?.map(|v| v.align_z(spine.start_tangent(), DVec3::Y).translate(spine.start_point()));
-	let mevius = Solid::sweep(&prof, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?.color("#2ebc71");
-	output(&[mevius], None)?;
-	return Ok(());
-}
-
-fn profile(width: f64, height: f64) -> Result<[Edge; 4], cadrum::Error> {
-	let v: Vec<Edge> = Edge::polygon(&[DVec3::new(-width / 2., -height / 2., 0.0), DVec3::new(width / 2., -height / 2., 0.0), DVec3::new(width / 2., height / 2., 0.0), DVec3::new(-width / 2., height / 2., 0.0)])?;
-	Ok(v.try_into().unwrap())
-}
-
-fn output(solids: &[Solid], suffix: Option<&str>) -> Result<(), cadrum::Error> {
-	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap().to_string() + suffix.unwrap_or_default();
-	Solid::write_step(solids, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
-	let mesh = Solid::mesh(solids, Default::default())?;
-	let scene = mesh.scene(Default::default());
-	scene.write_svg(&mut std::fs::File::create(format!("{example_name}.svg")).unwrap())?;
-	scene.write_png([640, 640], &mut std::fs::File::create(format!("{example_name}.png")).unwrap())?;
-	mesh.write_stl(&mut std::fs::File::create(format!("{example_name}.stl")).unwrap())?;
-	mesh.write_gltf_binary(&mut std::fs::File::create(format!("{example_name}.glb")).unwrap())?;
-
-	println!("wrote {example_name}.step / {example_name}.svg / {example_name}.png");
-	Ok(())
-}
-
-```
-
-Output: [14_moebius.png](https://lzpel.github.io/cadrum/14_moebius.png) | [14_moebius.step](https://lzpel.github.io/cadrum/14_moebius.step) | [14_moebius.glb](https://lzpel.github.io/cadrum/14_moebius.glb) | [14_moebius.stl](https://lzpel.github.io/cadrum/14_moebius.stl) | [14_moebius.svg](https://lzpel.github.io/cadrum/14_moebius.svg)
-
-<img src='https://lzpel.github.io/cadrum/14_moebius.svg' alt='14_moebius' width='360'/>
 
 #### Multiview
 

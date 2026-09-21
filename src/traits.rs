@@ -190,15 +190,6 @@ pub trait Transform: Sized {
 	}
 }
 
-/// How a spine station selects its corresponding point on the auxiliary guide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GuideCorrespondence {
-	/// Equal fractions of each curve's length. Sections can tilt away from the spine normal.
-	ArcLength,
-	/// Intersect the guide with the plane normal to the spine tangent at each station.
-	NormalPlane,
-}
-
 // ==================== ProfileOrient ====================
 
 /// Controls how the cross-section profile is oriented as it travels along the
@@ -212,7 +203,6 @@ pub enum GuideCorrespondence {
 /// | ねじ・バネ・つる (helix 系) | [`Torsion`](Self::Torsion) または [`Up`](Self::Up)`(axis)` |
 /// | 道路・線路・パイプ (重力方向を保ちたい) | [`Up`](Self::Up)`(DVec3::Z)` |
 /// | 上記に当てはまらない 3D 自由曲線 | [`Torsion`](Self::Torsion) |
-/// | 任意の捻り制御 (メビウスの輪等) | [`Auxiliary`](Self::Auxiliary) |
 ///
 /// **`Torsion` と `Up(axis)` の関係**: helix のような定曲率・定 torsion 曲線では、
 /// この 2 つは数学的に等価なトリヘドロンを生成します。`Torsion` は曲線の主法線
@@ -220,7 +210,7 @@ pub enum GuideCorrespondence {
 /// 方向を T 直交平面に射影して binormal にする — helix 上ではこの 2 つが
 /// 同じ axis を指すため、結果が一致します。helix 以外の曲線では一致しません。
 #[derive(Clone, Copy)]
-pub enum ProfileOrient<'a> {
+pub enum ProfileOrient {
 	/// Profile is parallel-transported along the spine **without rotating**.
 	/// All cross-sections stay parallel to the starting orientation.
 	///
@@ -246,12 +236,6 @@ pub enum ProfileOrient<'a> {
 	///   保ちたい sweep 全般
 	/// - **不適**: 任意の点で `up` が tangent と平行になる spine
 	Up(DVec3),
-
-	/// Profile orientation is controlled by an auxiliary spine curve.
-	/// The profile's X axis tracks the direction toward the auxiliary spine.
-	///
-	/// - **適**: メビウスの輪、ステラレーターの断面回転、任意の捻り制御
-	Auxiliary { guide: &'a [crate::Edge], correspondence: GuideCorrespondence },
 }
 
 // ==================== BSplineEnd ====================
@@ -602,7 +586,7 @@ pub trait SolidStruct: Sized + Clone + Debug + Transform {
 	// 戻り型は単一 `Self` 固定。MakePipeShell が compound を返すことは closed
 	// face 入力に対しては実質起きないため、`Vec<Self>` に拡張する手間を省いた。
 	// 想定外ケースに当たったら `Solid::new` の debug_assert で気付ける。
-	fn sweep<'a, 'b, 'c>(profile: impl IntoIterator<Item = &'a Self::Edge>, spine: impl IntoIterator<Item = &'b Self::Edge>, orient: ProfileOrient<'c>) -> Result<Self, Error>
+	fn sweep<'a, 'b>(profile: impl IntoIterator<Item = &'a Self::Edge>, spine: impl IntoIterator<Item = &'b Self::Edge>, orient: ProfileOrient) -> Result<Self, Error>
 	where
 		Self::Edge: 'a + 'b;
 

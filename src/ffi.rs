@@ -8,6 +8,7 @@ mod ffi_bridge {
 		normals: Vec<f64>,  // flat xyz, one per vertex
 		indices: Vec<u32>,
 		face_tshape_ids: Vec<u64>, // per-triangle TShape* address
+		face_indices: Vec<u32>,    // per-triangle face occurrence in traversal order
 	}
 
 	// Expose Rust stream types to C++ for streambuf callbacks
@@ -64,6 +65,10 @@ mod ffi_bridge {
 
 		fn shape_is_null(shape: &TopoDS_Shape) -> bool;
 		fn shape_is_closed(shape: &TopoDS_Shape) -> bool;
+		fn wire_ordered_edges(shape: &TopoDS_Shape) -> Result<UniquePtr<CxxVector<TopoDS_Edge>>>;
+		fn edge_is_reversed(edge: &TopoDS_Edge) -> bool;
+		fn wire_planar_region(shape: &TopoDS_Shape, tolerance: f64, ox: &mut f64, oy: &mut f64, oz: &mut f64, nx: &mut f64, ny: &mut f64, nz: &mut f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		fn planar_regions_coincide(left: &TopoDS_Shape, right: &TopoDS_Shape) -> Result<bool>;
 		// Codes mirrored by `occt::shape::ShapeKind`; see ffi.h.
 		fn shape_kind(shape: &TopoDS_Shape) -> u32;
 		fn shape_is_valid(shape: &TopoDS_Shape) -> Result<bool>;
@@ -94,6 +99,8 @@ mod ffi_bridge {
 		fn clone_face_handle(face: &TopoDS_Face) -> UniquePtr<TopoDS_Face>;
 
 		// ==================== Face Methods ====================
+
+		fn face_sample(face: &TopoDS_Face, u_fraction: f64, v_fraction: f64, result: &mut [f64]) -> Result<()>;
 
 		fn face_tshape_id(face: &TopoDS_Face) -> u64;
 		fn shape_tshape_id(shape: &TopoDS_Shape) -> u64;

@@ -1,5 +1,4 @@
 //! Sweep showcase: M2 screw (helix spine) + U-shaped pipe (line+arc+line spine)
-//! + twisted ribbon (`Auxiliary` aux-spine mode).
 //!
 //! `ProfileOrient` controls how the profile is oriented as it travels along the spine:
 //!
@@ -15,9 +14,6 @@
 //!   tangent–`axis` plane. Suited for roads/rails/pipes that must preserve a
 //!   gravity direction. On a helix, `Up(helix_axis)` is equivalent to `Torsion`.
 //!   Fails when the tangent becomes parallel to `axis`.
-//! - `Auxiliary(aux_spine)`: profile's tracked axis points from the main spine
-//!   toward a parallel auxiliary spine. Arbitrary twist control — e.g. a
-//!   helical `aux_spine` on a straight `spine` produces a twisted ribbon.
 
 use cadrum::{DVec3, Edge, Error, ProfileOrient, Solid};
 
@@ -88,37 +84,9 @@ fn build_u_pipe() -> Result<Solid, Error> {
 	Ok(pipe.translate(DVec3::X * 6.0).color("blue"))
 }
 
-// ==================== Component 3: Auxiliary-spine twisted ribbon ====================
-
-// Sweeping a straight spine with `Auxiliary(&[helix])` rotates the tracked
-// axis of the profile at each point to face the corresponding helix point.
-// A pitch=h helix makes exactly one 360° turn over [0, h], so a flat
-// rectangular profile becomes a ribbon twisted once. With `Fixed` or
-// `Torsion` the profile wouldn't rotate along a straight spine — visible
-// twist is therefore proof that Auxiliary is in effect.
-fn build_twisted_ribbon() -> Result<Solid, Error> {
-	let h = 8.0;
-	let aux_r = 3.0;
-
-	let spine = Edge::line(DVec3::ZERO, DVec3::Z * h)?;
-	let aux = Edge::helix(aux_r, h, h, DVec3::Z, DVec3::X)?;
-
-	// Flat rectangle (10:1 aspect) — circles or squares wouldn't reveal any twist.
-	let profile = Edge::polygon(&[DVec3::new(-2.0, -0.2, 0.0), DVec3::new(2.0, -0.2, 0.0), DVec3::new(2.0, 0.2, 0.0), DVec3::new(-2.0, 0.2, 0.0)])?;
-
-	let ribbon = Solid::sweep(&profile, &[spine], ProfileOrient::Auxiliary { guide: &[aux], correspondence: cadrum::GuideCorrespondence::NormalPlane })?;
-	Ok(ribbon.translate(DVec3::X * 12.0).color("green"))
-}
-
-// ==================== main: side-by-side layout ====================
-//
-// Each builder places its component at its final world position (screw at
-// origin, U-pipe at x=6, ribbon at x=12) and applies its color, so main
-// just concatenates them.
-
 fn main() -> Result<(), Error> {
 	let example_name = std::path::Path::new(file!()).file_stem().unwrap().to_str().unwrap();
-	let all = [build_m2_screw()?, build_u_pipe()?, build_twisted_ribbon()?];
+	let all = [build_m2_screw()?, build_u_pipe()?];
 
 	Solid::write_step(&all, &mut std::fs::File::create(format!("{example_name}.step")).unwrap())?;
 

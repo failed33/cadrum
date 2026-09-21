@@ -185,9 +185,11 @@ mod glb {
 				normals: vec![DVec3::Z; vertex_count],
 				indices: vec![0, 1, vertex_count - 1],
 				face_ids: vec![1],
+				face_indices: vec![0],
 				#[cfg(feature = "color")]
 				colormap: Default::default(),
 				edges: Vec::new(),
+				edge_ranges: Vec::new(),
 			};
 			let mut glb = Vec::new();
 			mesh.write_gltf_binary(&mut glb).expect("GLB at the index-width boundary");

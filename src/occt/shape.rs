@@ -132,8 +132,8 @@ impl Shape {
 		ffi::shape_is_null(&self.inner)
 	}
 
-	/// Whether every edge is shared by two faces: what a shell has to be
-	/// before it can bound a solid.
+	/// Native topological closure: a wire has no free vertex; a shell has
+	/// no free boundary edge.
 	pub fn is_closed(&self) -> bool {
 		ffi::shape_is_closed(&self.inner)
 	}
@@ -175,6 +175,23 @@ impl Shape {
 		let (mut xmax, mut ymax, mut zmax) = (0.0_f64, 0.0_f64, 0.0_f64);
 		ffi::shape_bounding_box(&self.inner, &mut xmin, &mut ymin, &mut zmin, &mut xmax, &mut ymax, &mut zmax);
 		[DVec3::new(xmin, ymin, zmin), DVec3::new(xmax, ymax, zmax)]
+	}
+
+	/// Edges in connected wire order, preserving each edge's traversal orientation.
+	pub fn ordered_wire_edges(&self) -> Result<Vec<Edge>, Error> {
+		ffi::wire_ordered_edges(&self.inner).map_err(|error| Error::Validation(error.to_string()))?.iter().map(|edge| Edge::try_from_ffi(ffi::clone_edge_handle(edge), "ordered wire edge is null".into())).collect()
+	}
+
+	/// Validate a closed planar bounded region without modifying the source wire.
+	pub fn planar_region(&self, tolerance: Option<f64>) -> Result<Option<(Shape, DVec3, DVec3)>, Error> {
+		let (mut ox, mut oy, mut oz, mut nx, mut ny, mut nz) = (0., 0., 0., 0., 0., 0.);
+		let face = ffi::wire_planar_region(&self.inner, tolerance.unwrap_or(f64::NAN), &mut ox, &mut oy, &mut oz, &mut nx, &mut ny, &mut nz).map_err(|error| Error::Validation(error.to_string()))?;
+		Ok((!face.is_null()).then(|| (Shape::new(face), DVec3::new(ox, oy, oz), DVec3::new(nx, ny, nz))))
+	}
+
+	/// Whether two validated planar faces bound the same region at native tolerance.
+	pub fn planar_region_coincides(&self, other: &Shape) -> Result<bool, Error> {
+		ffi::planar_regions_coincide(&self.inner, &other.inner).map_err(|error| Error::Validation(error.to_string()))
 	}
 
 	pub fn iter_edge(&self) -> impl Iterator<Item = &Edge> + '_ {
@@ -225,15 +242,19 @@ impl Shape {
 		// Topological edge polylines, NaN-separated, through the edge
 		// discretizer; `relative_linear` applies to the surfaces only.
 		let mut edges: Vec<DVec3> = Vec::new();
+		let mut edge_ranges = Vec::new();
 		for edge in ffi::shape_edges(&compound.inner).iter() {
 			let segments = ffi::edge_approximation_segments(edge, options.deflection_linear, options.deflection_angular, options.relative_linear);
 			if segments.len() < 6 {
+				edge_ranges.push([edges.len(), edges.len()]);
 				continue;
 			}
 			if !edges.is_empty() {
 				edges.push(DVec3::NAN);
 			}
+			let start = edges.len();
 			edges.extend(segments.chunks_exact(3).map(|point| DVec3::new(point[0], point[1], point[2])));
+			edge_ranges.push([start, edges.len()]);
 		}
 
 		Ok(Mesh {
@@ -241,9 +262,11 @@ impl Shape {
 			normals,
 			indices,
 			face_ids: data.face_tshape_ids,
+			face_indices: data.face_indices,
 			#[cfg(feature = "color")]
 			colormap: Default::default(),
 			edges,
+			edge_ranges,
 		})
 	}
 

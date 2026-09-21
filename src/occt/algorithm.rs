@@ -37,6 +37,7 @@
 //! | `Sphere` | `BRepPrimAPI_MakeSphere` | -- | centre, radius |
 //! | `Cylinder` | `BRepPrimAPI_MakeCylinder` | -- | base, axis, radius, height |
 //! | `Cone` | `BRepPrimAPI_MakeCone` | -- | base, axis, two radii, height |
+//! | `PeriodicGrid` | periodic tensor interpolation | corresponding grid samples | tolerance |
 //! | `Torus` | `BRepPrimAPI_MakeTorus` | -- | centre, axis, two radii |
 //! | `HalfSpace` | `BRepPrimAPI_MakeHalfSpace` | -- | plane origin, normal |
 //! | `Wire` | `BRepBuilderAPI_MakeWire` | edges | -- |
@@ -70,7 +71,6 @@ use super::face::Face;
 use super::ffi;
 use super::shape::Shape;
 use crate::common::error::Error;
-use crate::GuideCorrespondence;
 use boolean_expression::{Expression, Instruction, Operation};
 use glam::DVec3;
 use std::sync::{Mutex, PoisonError};
@@ -168,7 +168,7 @@ impl Default for Filling {
 
 /// How the section frame follows the spine of a [`Algorithm::PipeShell`].
 #[derive(Debug, Clone, Copy)]
-pub enum Frame<'a> {
+pub enum Frame {
 	/// The frame at the spine's start, kept throughout.
 	Fixed,
 	/// The Frenet trihedron: the section twists with the curve's torsion.
@@ -177,8 +177,6 @@ pub enum Frame<'a> {
 	CorrectedFrenet,
 	/// The binormal held to this direction.
 	Up(DVec3),
-	/// A second wire that the section's x axis keeps pointing at.
-	Auxiliary { guide: &'a Shape, correspondence: GuideCorrespondence },
 }
 
 /// One station of a law sampled along a spine or a fillet contour: `value` at
@@ -222,6 +220,14 @@ impl Bevel {
 /// See the module documentation for the builder behind each row.
 #[derive(Debug, Clone, Copy)]
 pub enum Algorithm<'a> {
+	/// Tensor-product interpolation, periodic in both directions, one sample per seam.
+	PeriodicGrid {
+		points: &'a [DVec3],
+		rows: usize,
+		columns: usize,
+		tolerance: f64,
+	},
+
 	Box {
 		corner: DVec3,
 		opposite: DVec3,
@@ -275,7 +281,7 @@ pub enum Algorithm<'a> {
 	PipeShell {
 		spine: &'a Shape,
 		sections: &'a [&'a Shape],
-		frame: Frame<'a>,
+		frame: Frame,
 		law: &'a [LawSample],
 		tolerance: Option<f64>,
 		solid: bool,
@@ -475,6 +481,7 @@ impl Algorithm<'_> {
 	/// case for case.
 	fn call(self) -> Call {
 		match self {
+			Algorithm::PeriodicGrid { points, rows, columns, tolerance } => Call::new(29).count(rows).count(columns).scalar(tolerance).scalars(points.iter().flat_map(|point| point.to_array())),
 			Algorithm::Box { corner, opposite } => Call::new(0).vec(corner.min(opposite)).vec(corner.max(opposite)),
 			Algorithm::Sphere { center, radius } => Call::new(1).vec(center).scalar(radius),
 			Algorithm::Cylinder { base, axis, radius, height } => Call::new(2).vec(base).vec(axis).scalar(radius).scalar(height),
@@ -486,21 +493,13 @@ impl Algorithm<'_> {
 			Algorithm::Prism { base, vector } => Call::new(8).shape(base).vec(vector),
 			Algorithm::Revolution { base, axis_origin, axis_direction, angle } => Call::new(9).shape(base).vec(axis_origin).vec(axis_direction).scalar(angle),
 			Algorithm::PipeShell { spine, sections, frame, law, tolerance, solid } => {
-				let (code, up, auxiliary) = match frame {
-					Frame::Fixed => (0, DVec3::ZERO, None),
-					Frame::Frenet => (1, DVec3::ZERO, None),
-					Frame::Up(direction) => (2, direction, None),
-					Frame::Auxiliary { guide, correspondence } => (
-						match correspondence {
-							GuideCorrespondence::ArcLength => 3,
-							GuideCorrespondence::NormalPlane => 5,
-						},
-						DVec3::ZERO,
-						Some(guide),
-					),
-					Frame::CorrectedFrenet => (4, DVec3::ZERO, None),
+				let (code, up) = match frame {
+					Frame::Fixed => (0, DVec3::ZERO),
+					Frame::Frenet => (1, DVec3::ZERO),
+					Frame::Up(direction) => (2, direction),
+					Frame::CorrectedFrenet => (3, DVec3::ZERO),
 				};
-				Call::new(10).shape(spine).shapes(auxiliary.as_ref()).shapes(sections).integer(code).integer(i64::from(auxiliary.is_some())).count(sections.len()).count(law.len()).integer(i64::from(solid)).vec(up).scalar(tolerance.unwrap_or(f64::NAN)).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value))
+				Call::new(10).shape(spine).shapes(sections).integer(code).count(sections.len()).count(law.len()).integer(i64::from(solid)).vec(up).scalar(tolerance.unwrap_or(f64::NAN)).scalars(law.iter().map(|sample| sample.station)).scalars(law.iter().map(|sample| sample.value))
 			}
 			Algorithm::ThruSections { sections, ruled, tolerance, solid } => Call::new(11).shapes(sections).integer(i64::from(ruled)).integer(i64::from(solid)).scalar(tolerance),
 			Algorithm::OffsetShape { shape, offset, tolerance, join, intersection } => Call::new(12).shape(shape).scalar(offset).scalar(tolerance).integer(join.code()).integer(i64::from(intersection)),

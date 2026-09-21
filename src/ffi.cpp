@@ -1,10 +1,5 @@
 #include "cadrum/src/ffi.rs.h"
 
-// Keep the guide derivative correction identical for source and prebuilt OCCT.
-#include <Standard_Version.hxx>
-static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch when updating OCCT");
-#include "../patches/GeomFill_GuideTrihedronAC.cxx"
-
 // ==================== OCCT headers (impl only — not exposed via wrapper.h) ====================
 //
 // Grouped by responsibility. Anything used in wrapper.h is included there;
@@ -46,6 +41,9 @@ static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch 
 #include <BRepLib.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_FindPlane.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <Geom_Plane.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -91,6 +89,7 @@ static_assert(OCC_VERSION_HEX == 0x080001, "Reassess the guide derivative patch 
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffset_Mode.hxx>
 #include <GeomAbs_JoinType.hxx>
@@ -409,13 +408,7 @@ static void check_integration(double error, double mass) {
 
 static GProp_GProps volume_properties(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    double error = BRepGProp::VolumeProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
-    if (!std::isfinite(error) || error < 0.0 || error > MASS_PROPERTY_EPS) {
-        // The fallback integrates knot spans explicitly when adaptive Gauss
-        // cannot resolve a spline face within its internal iteration limit.
-        props = GProp_GProps();
-        error = BRepGProp::VolumePropertiesGK(shape, props, MASS_PROPERTY_EPS * 0.01, false, true, true, true);
-    }
+    const double error = BRepGProp::VolumeProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
     check_integration(error, props.Mass());
     return props;
 }
@@ -426,11 +419,7 @@ double shape_volume(const TopoDS_Shape& shape) {
 
 double shape_surface_area(const TopoDS_Shape& shape) {
     GProp_GProps props;
-    double error = BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
-    if (!std::isfinite(error) || error < 0.0 || error > MASS_PROPERTY_EPS) {
-        props = GProp_GProps();
-        error = BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS * 0.0001);
-    }
+    const double error = BRepGProp::SurfaceProperties(shape, props, MASS_PROPERTY_EPS * 0.01);
     check_integration(error, props.Mass());
     return props.Mass();
 }
@@ -503,9 +492,7 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
     parameters.AngleInterior = angular;
     parameters.Relative = relative;
     parameters.EnableControlSurfaceDeflectionAllSurfaces = true;
-    constexpr uint64_t MAX_REFINEMENT_TRIANGLES = 4'000'000;
-    double previous = std::numeric_limits<double>::infinity();
-    uint64_t previous_triangles = 0;
+    double best = std::numeric_limits<double>::infinity();
     int unchanged = 0;
     for (;;) {
         BRepMesh_IncrementalMesh mesher(shape, parameters);
@@ -523,16 +510,15 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
             triangles += static_cast<uint64_t>(mesh->NbTriangles());
         }
         if (measured <= mesh_budget) break;
-        unchanged = measured >= previous && triangles == previous_triangles ? unchanged + 1 : 0;
-        if (unchanged >= 3 || triangles >= MAX_REFINEMENT_TRIANGLES || parameters.Deflection <= Precision::Confusion()) {
+        unchanged = measured >= best * (1.0 - std::sqrt(std::numeric_limits<double>::epsilon())) ? unchanged + 1 : 0;
+        if (unchanged >= 3 || parameters.Deflection <= Precision::Confusion()) {
             std::ostringstream message;
-            message << "refinement " << (unchanged >= 3 ? "stalled" : "budget exhausted")
+            message << "refinement " << (unchanged >= 3 ? "stalled" : "reached native precision")
                     << ": requested=" << linear << ", measured=" << measured
                     << ", triangles=" << triangles << ", status=" << mesher.GetStatusFlags();
             throw std::runtime_error(message.str());
         }
-        previous = measured;
-        previous_triangles = triangles;
+        best = std::min(best, measured);
         // Adjust the requested chord error using its measured overshoot;
         // cap each refinement step because the estimator need not be monotone.
         double factor = std::clamp(0.8 * mesh_budget / measured, 0.25, 0.5);
@@ -541,6 +527,7 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
     }
 
     uint32_t global_vertex_offset = 0;
+    uint32_t face_index = 0;
 
     for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
         TopoDS_Face face = TopoDS::Face(explorer.Current());
@@ -635,9 +622,12 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
                 result.indices.push_back(global_vertex_offset + n3 - 1);
             }
             result.face_tshape_ids.push_back(face_id);
+            result.face_indices.push_back(face_index);
         }
 
         global_vertex_offset += nb_nodes;
+        if (face_index == std::numeric_limits<uint32_t>::max()) throw std::runtime_error("face index overflow");
+        ++face_index;
     }
 
     return result;
@@ -656,6 +646,69 @@ std::unique_ptr<std::vector<TopoDS_Edge>> shape_edges(const TopoDS_Shape& shape)
         out->push_back(TopoDS::Edge(edgeMap(i)));
     }
     return out;
+}
+
+std::unique_ptr<std::vector<TopoDS_Edge>> wire_ordered_edges(const TopoDS_Shape& shape) {
+    if (shape.ShapeType() != TopAbs_WIRE) throw std::invalid_argument("ordered edges require a wire");
+    auto edges = std::make_unique<std::vector<TopoDS_Edge>>();
+    for (BRepTools_WireExplorer walk(TopoDS::Wire(shape)); walk.More(); walk.Next()) {
+        edges->push_back(walk.Current());
+    }
+    if (edges->size() != shape_edges(shape)->size()) throw std::invalid_argument("wire is not one traversable chain");
+    return edges;
+}
+
+std::unique_ptr<TopoDS_Shape> wire_planar_region(
+    const TopoDS_Shape& shape, double tolerance,
+    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz)
+{
+    if (shape.ShapeType() != TopAbs_WIRE || !BRep_Tool::IsClosed(shape)) return nullptr;
+    if (std::isfinite(tolerance)) {
+        for (TopExp_Explorer edge(shape, TopAbs_EDGE); edge.More(); edge.Next()) {
+            if (BRep_Tool::Tolerance(TopoDS::Edge(edge.Current())) > tolerance) return nullptr;
+        }
+    }
+    // Face construction adds pcurves. Isolate that derived topology from the
+    // immutable curve that the caller may also use as a path.
+    BRepBuilderAPI_Copy copy(shape, true, false);
+    const TopoDS_Wire wire = TopoDS::Wire(copy.Shape());
+    BRepBuilderAPI_FindPlane plane(wire, std::isfinite(tolerance) ? tolerance : -1.0);
+    if (!plane.Found()) return nullptr;
+    BRepBuilderAPI_MakeFace builder(plane.Plane()->Pln(), wire, true);
+    if (!builder.IsDone() || !BRepCheck_Analyzer(builder.Face()).IsValid()) return nullptr;
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(builder.Face(), properties);
+    if (!(std::isfinite(properties.Mass()) && properties.Mass() > 0.0)) return nullptr;
+    const gp_Pnt origin = plane.Plane()->Location();
+    gp_Dir normal = plane.Plane()->Axis().Direction();
+    if (builder.Face().Orientation() == TopAbs_REVERSED) normal.Reverse();
+    ox = origin.X(); oy = origin.Y(); oz = origin.Z();
+    nx = normal.X(); ny = normal.Y(); nz = normal.Z();
+    return std::make_unique<TopoDS_Shape>(builder.Face());
+}
+
+bool planar_regions_coincide(const TopoDS_Shape& left, const TopoDS_Shape& right) {
+    if (left.ShapeType() != TopAbs_FACE || right.ShapeType() != TopAbs_FACE)
+        throw std::invalid_argument("region comparison requires validated planar faces");
+    // Equal bounded regions have no face in either directed difference.
+    // Native Boolean tolerances are retained; no fuzzy tolerance is added.
+    const auto empty_difference = [](const TopoDS_Shape& argument, const TopoDS_Shape& tool) {
+        BRepAlgoAPI_Cut difference;
+        NCollection_List<TopoDS_Shape> arguments, tools;
+        arguments.Append(argument); tools.Append(tool);
+        difference.SetArguments(arguments);
+        difference.SetTools(tools);
+        difference.SetNonDestructive(true);
+        difference.Build();
+        if (!difference.IsDone() || !BRepCheck_Analyzer(difference.Shape()).IsValid())
+            throw std::runtime_error("could not compare planar section regions");
+        return !TopExp_Explorer(difference.Shape(), TopAbs_FACE).More();
+    };
+    return empty_difference(left, right) && empty_difference(right, left);
+}
+
+bool edge_is_reversed(const TopoDS_Edge& edge) {
+    return edge.Orientation() == TopAbs_REVERSED;
 }
 
 std::unique_ptr<std::vector<TopoDS_Face>> shape_faces(const TopoDS_Shape& shape) {
@@ -1225,6 +1278,7 @@ enum Row : uint32_t {
     ROW_PROJECTION = 26,
     ROW_UNIFY = 27,
     ROW_DEFEATURING = 28,
+    ROW_PERIODIC_GRID = 29,
 };
 
 // The arguments of one call, read by position. Every accessor refuses a
@@ -1429,61 +1483,60 @@ Product row(Row row, const Call& call) {
             return built(builder, call);
         }
         case ROW_PIPE_SHELL: {
-            // integers: [frame, has auxiliary spine, sections, law samples, solid]
+            // integers: [frame, sections, law samples, solid]
             // scalars: [up xyz, tolerance (NaN: the builder's own), stations..., scales...]
-            BRepOffsetAPI_MakePipeShell builder(TopoDS::Wire(call.shape(0)));
-            size_t next = 1;
-            switch (call.integer(0)) {
-                case 0: {
-                    BRepAdaptor_Curve curve(TopoDS::Edge(TopExp_Explorer(call.shape(0), TopAbs_EDGE).Current()));
-                    gp_Pnt start;
-                    gp_Vec tangent;
-                    curve.D1(curve.FirstParameter(), start, tangent);
-                    const gp_Dir along(tangent);
-                    builder.SetMode(gp_Ax2(start, along, std::abs(along.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0)));
-                    break;
-                }
-                case 1: builder.SetMode(true); break;
-                case 2: builder.SetMode(call.dir(0)); break;
-                case 3:
-                case 5: builder.SetMode(TopoDS::Wire(call.shape(next++)), call.integer(0) == 3); break;
-                case 4: builder.SetMode(false); break;
-                default: throw std::invalid_argument("unknown sweep frame");
-            }
-            const size_t sections = call.count(2);
-            const size_t samples = call.count(3);
-            if (samples > 0) {
-                if (sections != 1) throw std::invalid_argument("a scale law sweeps exactly one section");
-                NCollection_Array1<gp_Pnt2d> values(1, static_cast<int>(samples));
-                for (size_t sample = 0; sample < samples; ++sample) {
-                    values.SetValue(static_cast<int>(sample + 1), gp_Pnt2d(call.scalar(4 + sample), call.scalar(4 + samples + sample)));
-                }
-                Handle(Law_Interpol) law = new Law_Interpol();
-                law->Set(values, false);
-                builder.SetLaw(TopoDS::Wire(call.shape(next)), law, false, true);
-            } else {
-                for (size_t section = 0; section < sections; ++section) builder.Add(TopoDS::Wire(call.shape(next + section)), false, false);
-            }
-            if (std::isfinite(call.scalar(3))) builder.SetTolerance(call.scalar(3), call.scalar(3));
             const double tolerance = std::isfinite(call.scalar(3)) ? call.scalar(3) : 1.0e-4;
             double error = std::numeric_limits<double>::infinity();
+            // Rebuilding one OCCT pipe clears section history while retaining cached preparation.
+            // Each approximation attempt needs a fresh builder to keep those states consistent.
             for (int segments = 100; segments <= 1600; segments *= 2) {
+                BRepOffsetAPI_MakePipeShell builder(TopoDS::Wire(call.shape(0)));
+                constexpr size_t next = 1;
+                switch (call.integer(0)) {
+                    case 0: {
+                        BRepAdaptor_Curve curve(TopoDS::Edge(TopExp_Explorer(call.shape(0), TopAbs_EDGE).Current()));
+                        gp_Pnt start;
+                        gp_Vec tangent;
+                        curve.D1(curve.FirstParameter(), start, tangent);
+                        const gp_Dir along(tangent);
+                        builder.SetMode(gp_Ax2(start, along, std::abs(along.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0)));
+                        break;
+                    }
+                    case 1: builder.SetMode(true); break;
+                    case 2: builder.SetMode(call.dir(0)); break;
+                    case 3: builder.SetMode(false); break;
+                    default: throw std::invalid_argument("unknown sweep frame");
+                }
+                const size_t sections = call.count(1);
+                const size_t samples = call.count(2);
+                if (samples > 0) {
+                    if (sections != 1) throw std::invalid_argument("a scale law sweeps exactly one section");
+                    NCollection_Array1<gp_Pnt2d> values(1, static_cast<int>(samples));
+                    for (size_t sample = 0; sample < samples; ++sample) {
+                        values.SetValue(static_cast<int>(sample + 1), gp_Pnt2d(call.scalar(4 + sample), call.scalar(4 + samples + sample)));
+                    }
+                    Handle(Law_Interpol) law = new Law_Interpol();
+                    law->Set(values, BRep_Tool::IsClosed(call.shape(0)));
+                    builder.SetLaw(TopoDS::Wire(call.shape(next)), law, false, true);
+                } else {
+                    for (size_t section = 0; section < sections; ++section) builder.Add(TopoDS::Wire(call.shape(next + section)), false, false);
+                }
+                if (std::isfinite(call.scalar(3))) builder.SetTolerance(call.scalar(3), call.scalar(3));
                 builder.SetMaxSegments(segments);
                 builder.Build();
                 if (!builder.IsDone()) break;
                 error = builder.ErrorOnSurface();
-                if (std::isfinite(error) && error <= tolerance) break;
+                if (!std::isfinite(error) || error > tolerance) continue;
+                if (call.integer(3) != 0 && !builder.MakeSolid()) throw std::runtime_error("could not close the swept shell into a solid");
+                return done(builder, call);
             }
-            if (!std::isfinite(error) || error > tolerance) {
-                std::ostringstream message;
-                message << "sweep approximation did not converge: requested " << tolerance << ", achieved " << error;
-                throw std::runtime_error(message.str());
-            }
-            if (call.integer(4) != 0 && (!builder.IsDone() || !builder.MakeSolid())) throw std::runtime_error("could not close the swept shell into a solid");
-            return done(builder, call);
+            std::ostringstream message;
+            message << "sweep approximation did not converge: requested " << tolerance << ", achieved " << error;
+            throw std::runtime_error(message.str());
         }
         case ROW_THRU_SECTIONS: {
             BRepOffsetAPI_ThruSections builder(call.integer(1) != 0, call.integer(0) != 0, call.scalar(0));
+            builder.SetMutableInput(false);
             for (const auto& section : call.shapes) builder.AddWire(TopoDS::Wire(section));
             return built(builder, call);
         }
@@ -1629,6 +1682,18 @@ Product row(Row row, const Call& call) {
             for (int line = 1; line <= 3; ++line) {
                 for (int column = 1; column <= 4; ++column) transform.SetValue(line, column, call.scalar(static_cast<size_t>((line - 1) * 4 + column - 1)));
             }
+            transform.SetForm();
+            if (transform.Form() != gp_Other) {
+                // SetForm classifies the matrix but does not normalize its stored scale.
+                // SetValues constructs a complete similarity instead of copying that partial state.
+                gp_Trsf similarity;
+                similarity.SetValues(
+                    call.scalar(0), call.scalar(1), call.scalar(2), call.scalar(3),
+                    call.scalar(4), call.scalar(5), call.scalar(6), call.scalar(7),
+                    call.scalar(8), call.scalar(9), call.scalar(10), call.scalar(11));
+                BRepBuilderAPI_Transform builder(call.shape(0), similarity, true);
+                return built(builder, call);
+            }
             BRepBuilderAPI_GTransform builder(call.shape(0), transform, true);
             return built(builder, call);
         }
@@ -1661,6 +1726,20 @@ Product row(Row row, const Call& call) {
             }
             return product;
         }
+        case ROW_PERIODIC_GRID: {
+            const size_t rows = call.count(0), columns = call.count(1);
+            const size_t maximum = static_cast<size_t>(std::numeric_limits<int>::max() - 1);
+            if (rows < 3 || columns < 3 || rows > maximum || columns > maximum ||
+                rows > (std::numeric_limits<size_t>::max() / 3) / columns ||
+                call.scalars.size() != 1 + rows * columns * 3)
+                throw std::invalid_argument("invalid periodic grid dimensions");
+            auto shape = make_bspline_solid_with_tolerance(
+                rust::Slice<const double>(call.scalars.data() + 1, call.scalars.size() - 1),
+                static_cast<uint32_t>(rows), static_cast<uint32_t>(columns), true,
+                call.scalar(0), call.scalar(0));
+            if (!shape || shape->IsNull()) throw std::runtime_error("periodic interpolation did not produce a solid");
+            return Product{*shape, {}, {}};
+        }
         case ROW_DEFEATURING: {
             BRepAlgoAPI_Defeaturing builder;
             builder.SetShape(call.shape(0));
@@ -1678,7 +1757,7 @@ const char* row_name(uint32_t code) {
         "box", "sphere", "cylinder", "cone", "torus", "half space", "wire", "face", "prism", "revolution",
         "pipe shell", "thru sections", "offset shape", "offset faces", "thick solid", "solid", "filling", "sew",
         "unused", "splitter", "section", "boolean", "fillet", "chamfer", "transform", "draft angle", "projection", "unify",
-        "defeaturing",
+        "defeaturing", "periodic grid",
     };
     return code < sizeof(names) / sizeof(names[0]) ? names[code] : "unknown";
 }
@@ -1743,13 +1822,22 @@ std::unique_ptr<std::vector<TopoDS_Edge>> free_boundary_edges(
 }
 
 std::unique_ptr<TopoDS_Shape> make_bspline_solid(
+    rust::Slice<const double> coords, uint32_t nu, uint32_t nv, bool u_periodic)
+{
+    return make_bspline_solid_with_tolerance(coords, nu, nv, u_periodic, Precision::Confusion(), 1.0e-3);
+}
+
+std::unique_ptr<TopoDS_Shape> make_bspline_solid_with_tolerance(
     rust::Slice<const double> coords,
     uint32_t nu, uint32_t nv,
-    bool u_periodic)
+    bool u_periodic, double tolerance, double sewing_tolerance)
 {
     try {
-        if (coords.size() != static_cast<size_t>(nu) * nv * 3) return nullptr;
-        if (nu < 2 || nv < 3) return nullptr;
+        const size_t maximum = static_cast<size_t>(std::numeric_limits<int>::max() - 1);
+        if (nu < (u_periodic ? 3u : 2u) || nv < 3 || nu > maximum || nv > maximum ||
+            static_cast<size_t>(nu) > (std::numeric_limits<size_t>::max() / 3) / nv ||
+            coords.size() != static_cast<size_t>(nu) * nv * 3) return nullptr;
+        for (double coordinate : coords) if (!std::isfinite(coordinate)) return nullptr;
 
         // Tensor-product truly-periodic interpolation (#120).
         //
@@ -1762,11 +1850,13 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
         // boundary by solving a circulant linear system) once per V column,
         // then once per U row of the resulting intermediate poles. The final
         // poles array feeds Geom_BSplineSurface(...) directly with the
-        // UPeriodic / VPeriodic flags, yielding C^(degree-1) continuity at
-        // both seams.
+        // UPeriodic / VPeriodic flags. Seam continuity follows the periodic
+        // interpolator's knot multiplicities and is verified independently.
         using HPntArray  = NCollection_HArray1<gp_Pnt>;
         using HRealArray = NCollection_HArray1<double>;
-        const double tol = Precision::Confusion();
+        if (!std::isfinite(tolerance) || tolerance <= 0.0 || !std::isfinite(sewing_tolerance) || sewing_tolerance <= 0.0)
+            throw std::invalid_argument("interpolation and sewing tolerances must be positive and finite");
+        const double tol = tolerance;
 
         // Build uniform parameter arrays so that every column / row uses the
         // SAME parametrization. With chord-length (the Interpolate default),
@@ -1802,9 +1892,7 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
             u_curves.push_back(interp.Curve());
         }
 
-        // Capture U knot vector / multiplicities / degree from any column;
-        // GeomAPI_Interpolate uses the same chord-length parametrization for
-        // all columns since the V coordinate is uniform per column.
+        // Shared uniform parameters give every column the same spline basis.
         const int u_degree = u_curves[0]->Degree();
         const int u_npoles = u_curves[0]->NbPoles();
         const NCollection_Array1<double>& u_knots = u_curves[0]->Knots();
@@ -1857,11 +1945,11 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
         // Side face spans the full parametric domain.
         double u1, u2, v1, v2;
         surface->Bounds(u1, u2, v1, v2);
-        BRepBuilderAPI_MakeFace face_maker(surface, Precision::Confusion());
+        BRepBuilderAPI_MakeFace face_maker(surface, tolerance);
         if (!face_maker.IsDone()) return nullptr;
         TopoDS_Face side_face = face_maker.Face();
 
-        BRepBuilderAPI_Sewing sewing(1.0e-3);
+        BRepBuilderAPI_Sewing sewing(sewing_tolerance);
         sewing.Add(side_face);
 
         // For non-periodic U, cap the two U-boundary loops with planar faces.
@@ -1913,8 +2001,8 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
         TopoDS_Solid solid = solid_maker.Solid();
 
         // Ensure outward-facing orientation.
-        BRepClass3d_SolidClassifier classifier(
-            solid, gp_Pnt(0, 0, 0), Precision::Confusion());
+        BRepClass3d_SolidClassifier classifier(solid);
+        classifier.PerformInfinitePoint(tolerance);
         if (classifier.State() == TopAbs_IN) {
             solid.Reverse();
         }
@@ -2082,6 +2170,35 @@ bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     return step_writer.WriteStream(os) == IFSelect_RetDone;
 }
 #endif // !FEATURE_COLOR
+
+void face_sample(const TopoDS_Face& face, double u_fraction, double v_fraction, rust::Slice<double> result) {
+    if (result.size() != 9 || !std::isfinite(u_fraction) || !std::isfinite(v_fraction))
+        throw std::invalid_argument("surface sample requires finite parameters and nine result coordinates");
+    try {
+        TopLoc_Location location;
+        Handle(Geom_Surface) surface = BRep_Tool::Surface(face, location);
+        if (surface.IsNull()) throw std::runtime_error("face has no surface");
+        double u0, u1, v0, v1;
+        surface->Bounds(u0, u1, v0, v1);
+        if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1))
+            throw std::runtime_error("surface has an unbounded parameter domain");
+        gp_Pnt point;
+        gp_Vec du, dv;
+        surface->D1(u0 + u_fraction * (u1 - u0), v0 + v_fraction * (v1 - v0), point, du, dv);
+        point.Transform(location.Transformation());
+        du.Transform(location.Transformation());
+        dv.Transform(location.Transformation());
+        du *= u1 - u0;
+        dv *= v1 - v0;
+        for (int axis = 1; axis <= 3; ++axis) {
+            result[axis - 1] = point.Coord(axis);
+            result[axis + 2] = du.Coord(axis);
+            result[axis + 5] = dv.Coord(axis);
+        }
+    } catch (const Standard_Failure& error) {
+        throw std::runtime_error(std::string("surface evaluation: ") + error.what());
+    }
+}
 
 } // namespace cadrum
 

@@ -19,6 +19,8 @@ pub struct Mesh {
 	pub indices: Vec<usize>,
 	/// Per-triangle face ID. Length equals `indices.len() / 3`.
 	pub face_ids: Vec<u64>,
+	/// Face occurrence per triangle, in shape traversal order (location-sensitive).
+	pub face_indices: Vec<u32>,
 	/// Per-face color map (face_id → Color).
 	#[cfg(feature = "color")]
 	pub colormap: HashMap<u64, Color>,
@@ -29,6 +31,8 @@ pub struct Mesh {
 	/// `write_gltf_binary` (the 3D scene / SVG / PNG pipeline derives its own
 	/// silhouette edges and does not read this field).
 	pub edges: Vec<DVec3>,
+	/// Half-open point ranges in `edges`, one per topological edge; separators are excluded.
+	pub edge_ranges: Vec<[usize; 2]>,
 }
 
 /// 2D rendering scene derived from a `Mesh` viewed from a given camera.
