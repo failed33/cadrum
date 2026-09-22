@@ -1,5 +1,6 @@
 use super::edge::Edge;
 use super::ffi;
+use super::topology::Key;
 use crate::traits::FaceStruct;
 use glam::DVec3;
 use std::sync::OnceLock;
@@ -28,6 +29,13 @@ impl Face {
 	pub(crate) fn new(inner: cxx::UniquePtr<ffi::TopoDS_Face>) -> Self {
 		Face { inner, edges: OnceLock::new() }
 	}
+
+	/// Located identity; see [`Key`].
+	pub fn key(&self) -> Key {
+		let (mut tshape, mut location) = (0, 0);
+		ffi::face_key(&self.inner, &mut tshape, &mut location);
+		Key { tshape, location }
+	}
 }
 
 impl std::fmt::Debug for Face {
@@ -40,7 +48,7 @@ impl FaceStruct for Face {
 	type Edge = Edge;
 
 	fn id(&self) -> u64 {
-		ffi::face_tshape_id(&self.inner)
+		self.key().tshape
 	}
 
 	fn project(&self, p: DVec3) -> (DVec3, DVec3) {

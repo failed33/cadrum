@@ -27,6 +27,7 @@ use super::ffi;
 #[cfg(not(feature = "color"))]
 use super::ffi::RustReader;
 use super::ffi::RustWriter;
+use super::topology::{Key, Nearest, Topology};
 use crate::common::error::Error;
 use crate::common::mesh::Mesh;
 use crate::traits::Tessellation;
@@ -84,6 +85,16 @@ impl ShapeKind {
 	}
 }
 
+/// What [`Shape::planar_region`] answers: the bounded face, its plane, and
+/// which face edge copies which wire edge.
+#[derive(Debug)]
+pub struct PlanarRegion {
+	pub face: Shape,
+	pub origin: DVec3,
+	pub normal: DVec3,
+	pub edges: Vec<(Key, Key)>,
+}
+
 /// A native shape of any kind, with its edges and faces enumerated on first
 /// use. The caches belong to this handle: a shape returned by the table or
 /// by a placement is a fresh carrier with fresh caches.
@@ -91,11 +102,36 @@ pub struct Shape {
 	inner: cxx::UniquePtr<ffi::TopoDS_Shape>,
 	edges: OnceLock<Vec<Edge>>,
 	faces: OnceLock<Vec<Face>>,
+	topology: OnceLock<Topology>,
 }
 
 impl Shape {
 	pub(crate) fn new(inner: cxx::UniquePtr<ffi::TopoDS_Shape>) -> Self {
-		Shape { inner, edges: OnceLock::new(), faces: OnceLock::new() }
+		Shape { inner, edges: OnceLock::new(), faces: OnceLock::new(), topology: OnceLock::new() }
+	}
+
+	/// What this shape is made of, read once: see [`Topology`]. The face and
+	/// edge positions it states are the positions of [`Shape::iter_face`] and
+	/// [`Shape::iter_edge`], and the ones a display mesh names.
+	pub fn topology(&self) -> Result<&Topology, Error> {
+		if let Some(report) = self.topology.get() {
+			return Ok(report);
+		}
+		let report = Topology::read(ffi::shape_topology(&self.inner).map_err(|error| Error::Validation(error.to_string()))?)?;
+		Ok(self.topology.get_or_init(|| report))
+	}
+
+	/// Located identity; see [`Key`].
+	pub fn key(&self) -> Key {
+		let (mut tshape, mut location) = (0, 0);
+		ffi::shape_key(&self.inner, &mut tshape, &mut location);
+		Key { tshape, location }
+	}
+
+	/// The sub-shape closest to `point` and where on it; `None` for a shape
+	/// with nothing to measure against.
+	pub fn nearest(&self, point: DVec3) -> Result<Option<Nearest>, Error> {
+		ffi::shape_nearest(&self.inner, point.x, point.y, point.z).map(Nearest::read).map_err(|error| Error::Properties(error.to_string()))
 	}
 
 	pub(crate) fn inner(&self) -> &ffi::TopoDS_Shape {
@@ -125,7 +161,7 @@ impl Shape {
 	/// The `TopoDS_TShape*` behind the handle. Two handles that share a
 	/// TShape -- a placed copy and its source -- share the id.
 	pub fn id(&self) -> u64 {
-		ffi::shape_tshape_id(&self.inner)
+		self.key().tshape
 	}
 
 	pub fn is_null(&self) -> bool {
@@ -182,14 +218,21 @@ impl Shape {
 		ffi::wire_ordered_edges(&self.inner).map_err(|error| Error::Validation(error.to_string()))?.iter().map(|edge| Edge::try_from_ffi(ffi::clone_edge_handle(edge), "ordered wire edge is null".into())).collect()
 	}
 
-	/// Validate a closed planar bounded region without modifying the source wire.
-	pub fn planar_region(&self, tolerance: Option<f64>) -> Result<Option<(Shape, DVec3, DVec3)>, Error> {
-		let (mut ox, mut oy, mut oz, mut nx, mut ny, mut nz) = (0., 0., 0., 0., 0., 0.);
-		let face = ffi::wire_planar_region(&self.inner, tolerance.unwrap_or(f64::NAN), &mut ox, &mut oy, &mut oz, &mut nx, &mut ny, &mut nz).map_err(|error| Error::Validation(error.to_string()))?;
-		Ok((!face.is_null()).then(|| (Shape::new(face), DVec3::new(ox, oy, oz), DVec3::new(nx, ny, nz))))
+	/// The planar face a closed wire bounds, with the plane it lies on and,
+	/// for every edge of the wire, the key of the face's own copy of it.
+	/// `None` when the wire is open, not planar within `tolerance`, or bounds
+	/// no area.
+	pub fn planar_region(&self, tolerance: Option<f64>) -> Result<Option<PlanarRegion>, Error> {
+		let (mut ox, mut oy, mut oz, mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		let mut edges = Vec::new();
+		let face = ffi::wire_planar_region(&self.inner, tolerance.unwrap_or(f64::NAN), &mut ox, &mut oy, &mut oz, &mut nx, &mut ny, &mut nz, &mut edges).map_err(|error| Error::Validation(error.to_string()))?;
+		if face.is_null() {
+			return Ok(None);
+		}
+		let edges = edges.chunks_exact(4).map(|words| (Key { tshape: words[0], location: words[1] }, Key { tshape: words[2], location: words[3] })).collect();
+		Ok(Some(PlanarRegion { face: Shape::new(face), origin: DVec3::new(ox, oy, oz), normal: DVec3::new(nx, ny, nz), edges }))
 	}
 
-	/// Whether two validated planar faces bound the same region at native tolerance.
 	pub fn planar_region_coincides(&self, other: &Shape) -> Result<bool, Error> {
 		ffi::planar_regions_coincide(&self.inner, &other.inner).map_err(|error| Error::Validation(error.to_string()))
 	}
@@ -238,14 +281,16 @@ impl Shape {
 		let vertices: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.vertices[i * 3], data.vertices[i * 3 + 1], data.vertices[i * 3 + 2])).collect();
 		let normals: Vec<DVec3> = (0..vertex_count).map(|i| DVec3::new(data.normals[i * 3], data.normals[i * 3 + 1], data.normals[i * 3 + 2])).collect();
 		let indices: Vec<usize> = data.indices.iter().map(|&i| i as usize).collect();
+		let topology = compound.topology()?;
+		let face_ids = data.face_indices.iter().map(|&face| topology.faces.get(face as usize).map(|fact| fact.key.tshape).ok_or_else(|| Error::Tessellation("triangle names no face of the report".into()))).collect::<Result<Vec<_>, _>>()?;
 
-		// Topological edge polylines, NaN-separated, through the edge
-		// discretizer; `relative_linear` applies to the surfaces only.
+		// The triangulation's own edge polylines, NaN-separated, in report order.
 		let mut edges: Vec<DVec3> = Vec::new();
 		let mut edge_ranges = Vec::new();
-		for edge in ffi::shape_edges(&compound.inner).iter() {
-			let segments = ffi::edge_approximation_segments(edge, options.deflection_linear, options.deflection_angular, options.relative_linear);
-			if segments.len() < 6 {
+		let points: Vec<DVec3> = data.edges.chunks_exact(3).map(|point| DVec3::new(point[0], point[1], point[2])).collect();
+		for range in data.edge_ranges.chunks_exact(2) {
+			let polyline = points.get(range[0] as usize..range[1] as usize).ok_or_else(|| Error::Tessellation("edge polyline range out of bounds".into()))?;
+			if polyline.is_empty() {
 				edge_ranges.push([edges.len(), edges.len()]);
 				continue;
 			}
@@ -253,7 +298,7 @@ impl Shape {
 				edges.push(DVec3::NAN);
 			}
 			let start = edges.len();
-			edges.extend(segments.chunks_exact(3).map(|point| DVec3::new(point[0], point[1], point[2])));
+			edges.extend_from_slice(polyline);
 			edge_ranges.push([start, edges.len()]);
 		}
 
@@ -261,7 +306,7 @@ impl Shape {
 			vertices,
 			normals,
 			indices,
-			face_ids: data.face_tshape_ids,
+			face_ids,
 			face_indices: data.face_indices,
 			#[cfg(feature = "color")]
 			colormap: Default::default(),

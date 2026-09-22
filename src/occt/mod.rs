@@ -9,3 +9,4 @@ mod ffi;
 pub mod io;
 pub mod shape;
 pub mod solid;
+pub mod topology;

@@ -16,8 +16,9 @@ pub use occt::{
 	algorithm::{apply, Algorithm, Applied, Bevel, Continuity, Filling, Frame, JoinType, LawSample},
 	edge::Edge,
 	face::Face,
-	shape::{Shape, ShapeKind},
+	shape::{PlanarRegion, Shape, ShapeKind},
 	solid::Solid,
+	topology::{Axis, CurveDefinition, Descent, EdgeFact, EdgeGeometry, FaceFact, Key, Landmark, LandmarkRole, Nearest, Placement, Relation, SplineCurve, SplineSurface, Support, SurfaceDefinition, Topology, VertexFact},
 };
 pub(crate) mod traits;
 // wasm32: no-op WASI/`env` import shims (self-contained wasm). Kept alive by the

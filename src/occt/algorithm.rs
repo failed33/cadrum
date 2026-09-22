@@ -3,10 +3,10 @@
 //!
 //! An [`Algorithm`] is one row: the inputs the OCCT builder takes and the
 //! parameters it is constructed with, nothing else. [`apply`] runs it and
-//! returns what every builder yields uniformly -- the shape, the
-//! `Modified`/`IsDeleted` history of every input, and the section instances a
-//! sweep or loft places at its ends. Error translation and
-//! history extraction live once, in `ffi.cpp`, behind `apply_algorithm`.
+//! returns what every builder yields uniformly -- the shape, the lineage of
+//! every input's faces, edges and vertices, and the faces the builder names
+//! itself. Error translation and lineage extraction live once, in `ffi.cpp`,
+//! behind `apply_algorithm`.
 //!
 //! # Designed twice
 //!
@@ -70,6 +70,7 @@ use super::edge::Edge;
 use super::face::Face;
 use super::ffi;
 use super::shape::Shape;
+use super::topology::{Descent, Landmark};
 use crate::common::error::Error;
 use boolean_expression::{Expression, Instruction, Operation};
 use glam::DVec3;
@@ -404,19 +405,27 @@ pub enum Algorithm<'a> {
 pub struct Applied {
 	/// The built shape, exactly as the builder returned it.
 	pub shape: Shape,
-	/// `[post, source]` pairs: which input face or edge each result element
-	/// descends from. An untouched input is its own descendant; a deleted one
-	/// is absent. Empty for rows whose inputs have no faces or edges.
-	pub history: Vec<[u64; 2]>,
-	/// The section instances at the start and end of a `PipeShell` or
-	/// `ThruSections`; `None` for every other row.
-	pub ends: Option<[Shape; 2]>,
+	/// Where each face, edge and vertex of the result came from, read through
+	/// the builder's `IsDeleted` / `Modified` / `Generated` for every sub-shape
+	/// of every input. An untouched input is [`Relation::Kept`]; a deleted one
+	/// is absent.
+	pub lineage: Vec<Descent>,
+	/// The faces the builder names itself; see [`LandmarkRole`].
+	pub landmarks: Vec<Landmark>,
 }
 
-/// A shape taken as it is: no row ran, so it has no history and no ends.
+impl Applied {
+	/// The lineage as `[result, source]` `TShape` pairs, location-blind: what
+	/// the [`crate::Solid`] colour map is keyed by.
+	pub fn history(&self) -> Vec<[u64; 2]> {
+		self.lineage.iter().map(|descent| [descent.result.tshape, descent.source.tshape]).collect()
+	}
+}
+
+/// A shape taken as it is: no row ran, so it has no lineage and no landmarks.
 impl From<Shape> for Applied {
 	fn from(shape: Shape) -> Self {
-		Applied { shape, history: Vec::new(), ends: None }
+		Applied { shape, lineage: Vec::new(), landmarks: Vec::new() }
 	}
 }
 
@@ -540,13 +549,9 @@ impl Algorithm<'_> {
 pub fn apply(algorithm: Algorithm<'_>) -> Result<Applied, Error> {
 	let _serialised = matches!(algorithm, Algorithm::ThruSections { .. }).then(|| LOFT.lock().unwrap_or_else(PoisonError::into_inner));
 	let call = algorithm.call();
-	let mut history = Vec::new();
-	let mut ends = ffi::shape_vec_new();
-	let shape = ffi::apply_algorithm(call.code, &call.shapes, &call.scalars, &call.integers, &mut history, ends.pin_mut()).map_err(|error| Error::Algorithm(error.to_string()))?;
-	let mut ends = ends.iter().map(|end| Shape::new(ffi::clone_shape_handle(end)));
-	let ends = match (ends.next(), ends.next()) {
-		(Some(first), Some(last)) => Some([first, last]),
-		_ => None,
-	};
-	Ok(Applied { shape: Shape::new(shape), history: history.chunks_exact(2).map(|pair| [pair[0], pair[1]]).collect(), ends })
+	let mut lineage = Vec::new();
+	let mut landmarks = Vec::new();
+	let mut refused = false;
+	let shape = ffi::apply_algorithm(call.code, &call.shapes, &call.scalars, &call.integers, &mut lineage, &mut landmarks, &mut refused).map_err(|error| if refused { Error::Refused(error.to_string()) } else { Error::Algorithm(error.to_string()) })?;
+	Ok(Applied { shape: Shape::new(shape), lineage: lineage.chunks_exact(5).filter_map(Descent::read).collect(), landmarks: landmarks.chunks_exact(3).filter_map(Landmark::read).collect() })
 }

@@ -11,6 +11,10 @@ pub enum Error {
 	/// carries OCCT's reason.
 	Algorithm(String),
 
+	/// A row of the algorithm table refused its input before OCCT ran on it;
+	/// the message names the row and what the input lacked.
+	Refused(String),
+
 	/// Triangulation/meshing failed.
 	Tessellation(String),
 
@@ -60,6 +64,7 @@ impl std::fmt::Display for Error {
 			Error::Validation(msg) => write!(f, "Validation failed: {msg}"),
 			Error::Io(e) => write!(f, "IO failed: {e}"),
 			Error::Algorithm(msg) => write!(f, "Algorithm failed: {msg}"),
+			Error::Refused(msg) => write!(f, "algorithm refused its input: {msg}"),
 			Error::Tessellation(message) => write!(f, "Tessellation failed: {message}"),
 			Error::Properties(message) => write!(f, "Property integration failed: {message}"),
 			Error::NotOne(n) => write!(f, "Expected exactly one resulting Solid, got {n}"),

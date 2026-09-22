@@ -1,4 +1,5 @@
 use super::ffi;
+use super::topology::Key;
 use crate::common::error::Error;
 use crate::traits::{BSplineEnd, EdgeStruct, Transform};
 use glam::DVec3;
@@ -10,6 +11,20 @@ pub struct Edge {
 
 impl Edge {
 	/// Whether topology traverses this edge opposite to its curve parameter.
+	/// Located identity; see [`Key`].
+	pub fn key(&self) -> Key {
+		let (mut tshape, mut location) = (0, 0);
+		ffi::edge_key(&self.inner, &mut tshape, &mut location);
+		Key { tshape, location }
+	}
+
+	/// The point and unit tangent `distance` along the forward
+	/// parametrisation, exactly; `None` where the abscissa cannot be placed.
+	pub fn at_length(&self, distance: f64) -> Option<(DVec3, DVec3)> {
+		let mut station = [0.0; 6];
+		ffi::edge_at_length(&self.inner, distance, &mut station).then(|| (DVec3::new(station[0], station[1], station[2]), DVec3::new(station[3], station[4], station[5])))
+	}
+
 	pub fn is_reversed(&self) -> bool {
 		ffi::edge_is_reversed(&self.inner)
 	}
@@ -86,7 +101,7 @@ impl std::fmt::Debug for Edge {
 
 impl EdgeStruct for Edge {
 	fn id(&self) -> u64 {
-		ffi::edge_tshape_id(&self.inner)
+		self.key().tshape
 	}
 
 	// ==================== Per-edge queries ====================

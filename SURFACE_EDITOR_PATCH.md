@@ -31,10 +31,12 @@ display triangulation so preview rebuilding does not mutate archived geometry.
 Track local changes against the registry source when updating this dependency.
 Remove this copy when a compatible upstream release supplies the needed APIs.
 
-The sweep binding also returns the start/end boundary identities supplied by
-`BRepOffsetAPI_MakePipeShell::FirstShape` and `LastShape`. These remain live
-native identities inside `cad-kernel`. Application construction references use
-generating-feature roles, never these identities or enumeration positions.
+Every row returns the faces its OCCT builder names as landmarks: the six
+sides of a box (`BRepPrimAPI_MakeBox`'s axis faces), the bottom, top and
+lateral face of the one-axis primitives, and `FirstShape`/`LastShape` of a
+prism, revolution, pipe or loft, resolved to the result face bounded by that
+section. These are live keys inside `cad-kernel`; application construction
+references use generating-feature roles, never keys or enumeration positions.
 
 Application integration also adds exception-safe box, sphere and cylinder
 constructors and an affine geometry transform through OCCT's
@@ -48,14 +50,38 @@ into new evaluation-scoped generated boundary references. Old live references
 remain stale; neither native edge identities nor enumeration positions become
 persisted selection.
 
-## Evaluated graph correspondence continuation
+## Lineage and located identity
 
-The shared builder history relay now records faces and edges, retaining multiple
-source relations when OCCT merges topology. The deep-copy relay uses
-`BRepBuilderAPI_Copy::ModifiedShape`; traversal order is no longer treated as
-copy correspondence. This supports surviving-edge resolution across native trim
-and fillet operations. The application keeps this history inside its worker-local
-evaluated graph. It does not serialize native identities as durable selection.
+Every row reports `Descent { relation, result key, source key }` for each face,
+edge and vertex of each input, read through the builder's `IsDeleted`,
+`Modified` and `Generated` (`relay_from_builder` in `ffi.cpp`). `Generated`
+relates across kinds: a prism's profile edge generates its lateral face. A key
+is the located identity `TopoDS_Shape::IsSame` compares -- the `TShape` and the
+hash of the handle's location -- so a placed copy of one native shape (a
+prism's two caps) has its own key. The deep-copy relay uses
+`BRepBuilderAPI_Copy::ModifiedShape`; a builder that faults inside `Generated`
+still returns its shape to the validity check. The application keeps lineage
+inside its worker-local evaluated graph and never serializes keys.
+
+## Topology report
+
+`Shape::topology()` reads one `TopologyData` per native shape
+(`topology.cpp`): every face, edge and vertex in `TopExp::MapShapes` order with
+its key, per-element `BRep_Tool::Tolerance`, edge-face and edge-vertex
+incidence from `TopExp::MapShapesAndAncestors`, and the
+`BRepBndLib::AddOptimal` extent. Each face and edge also carries the
+definition of the geometry it lies on, as the `BRepAdaptor` classifies it:
+one cxx shared struct per `GeomAbs` kind (`PlaneDef`, `CylinderDef`,
+`CircleDef`, `SplineCurveDef`, ...) holding what OCCT's `gp_*` value or spline
+handle states, filled by field name in C++ and parsed once in Rust into
+`SurfaceDefinition` / `CurveDefinition`. An edge with a curve states its ends,
+tangents and exact `GCPnts_AbscissaPoint` length beside it; a degenerate edge
+states no curve. The definition set is closed by OCCT's own classification,
+so it is typed once; there are no width checks or NaN sentinels past the
+bridge. Derived measurements stay on-demand queries: `Edge::at_length` (exact
+station), `Shape::nearest` (`BRepExtrema_DistShapeShape` support and closest
+point, with the face normal at the hit), `Shape::planar_region` reporting
+which face edge copies which wire edge, and the mass properties.
 
 ## Open surfaces
 
@@ -135,9 +161,10 @@ cause, and result pieces share one immutable history allocation.
 
 ## Tessellation correspondence
 
-Native mesh export carries the traversed face occurrence per triangle alongside
-its native face ID. Occurrence order distinguishes located uses of shared
-native topology; consumers do not infer it from triangle connectivity. Mesh
-edge ranges retain each topological edge's half-open point range, excluding
-NaN separators and retaining empty ranges for unsampled/degenerate edges.
-These keys belong to one tessellation and are not persistent shape identities.
+Native mesh export carries the face position of each triangle in the topology
+report's order, so a triangle names the same face the report and the lineage
+do; consumers do not infer it from triangle connectivity. Edge polylines are
+the mesher's own `Poly_PolygonOnTriangulation`, one half-open point range per
+report edge (empty for an unmeshed edge), so the overlay lies on the triangle
+boundaries. These positions belong to one shape and are not persistent
+identities.

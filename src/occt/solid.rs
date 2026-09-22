@@ -54,14 +54,14 @@ impl Solid {
 	/// The one solid a row returned, or the one solid it wrapped in a
 	/// compound (fillets and chamfers do), refused otherwise.
 	fn single(applied: Applied, refuse: impl FnOnce(String) -> Error) -> Result<(Shape, Vec<[u64; 2]>), Error> {
-		let Applied { shape, history, .. } = applied;
-		let shape = match shape.kind() {
-			ShapeKind::Solid => shape,
+		let history = applied.history();
+		let shape = match applied.shape.kind() {
+			ShapeKind::Solid => applied.shape,
 			_ => {
-				let mut solids = shape.components(ShapeKind::Solid);
+				let mut solids = applied.shape.components(ShapeKind::Solid);
 				match (solids.pop(), solids.is_empty()) {
 					(Some(solid), true) => solid,
-					_ => return Err(refuse(format!("expected one solid, got a {:?}", shape.kind()))),
+					_ => return Err(refuse(format!("expected one solid, got a {:?}", applied.shape.kind()))),
 				}
 			}
 		};
@@ -360,7 +360,9 @@ impl SolidStruct for Solid {
 			return Ok(Vec::new());
 		}
 		let expression = b.expression.map(Solid::as_shape);
-		let Applied { shape, history, .. } = apply(Algorithm::Boolean { expression: &expression })?;
+		let applied = apply(Algorithm::Boolean { expression: &expression })?;
+		let history = applied.history();
+		let shape = applied.shape;
 
 		#[cfg(feature = "color")]
 		let colormap: std::collections::HashMap<u64, crate::common::color::Color> = history.iter().filter_map(|[post, source]| solids.iter().find_map(|solid| solid.colormap.get(source)).map(|&color| (*post, color))).collect();

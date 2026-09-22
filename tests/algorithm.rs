@@ -4,7 +4,7 @@
 //! the rows below are the ones only reachable through `apply`, plus the open
 //! shell fixtures wave 7a stated on `Shell`.
 
-use cadrum::{apply, Algorithm, Bevel, BooleanOperation, Continuity, DVec3, Edge, Face, Filling, Frame, JoinType, LawSample, Shape, ShapeKind, Solid};
+use cadrum::{apply, Algorithm, BSplineEnd, Bevel, BooleanOperation, Continuity, CurveDefinition, DVec3, Edge, EdgeGeometry, Face, FaceFact, Filling, Frame, JoinType, LandmarkRole, LawSample, Relation, Shape, ShapeKind, Solid, SplineCurve, SurfaceDefinition};
 use std::f64::consts::PI;
 
 const TOLERANCE: f64 = 1.0e-6;
@@ -87,11 +87,11 @@ fn an_offset_box_maps_every_face_onto_its_source() {
 	let block = cube();
 	let applied = apply(Algorithm::OffsetShape { shape: block.as_shape(), offset: 1.0, tolerance: TOLERANCE, join: JoinType::Intersection, intersection: true }).expect("offset");
 	let faces: std::collections::HashSet<u64> = block.iter_face().map(Face::id).collect();
-	let imaged: std::collections::HashSet<u64> = applied.history.iter().filter(|[_, source]| faces.contains(source)).map(|[image, _]| *image).collect();
+	let imaged: std::collections::HashSet<u64> = applied.history().iter().filter(|[_, source]| faces.contains(source)).map(|[image, _]| *image).collect();
 	for face in applied.shape.iter_face() {
 		assert!(imaged.contains(&face.id()), "offset face {} descends from no face of the box", face.id());
 	}
-	let sources: std::collections::HashSet<u64> = applied.history.iter().map(|[_, source]| *source).collect();
+	let sources: std::collections::HashSet<u64> = applied.history().iter().map(|[_, source]| *source).collect();
 	assert!(faces.iter().all(|face| sources.contains(face)), "every face of the box has an offset image");
 }
 
@@ -112,7 +112,7 @@ fn a_boundary_enclosing_no_area_is_refused_rather_than_aborting() {
 		let there = Edge::line(start, start + direction * SIDE).expect("line");
 		let back = Edge::line(start + direction * SIDE, start).expect("line");
 		let error = apply(Algorithm::Filling { boundary: &[&there, &back], filling: Filling::default() }).expect_err("collinear boundary");
-		assert!(matches!(error, cadrum::Error::Algorithm(reason) if reason.contains("does not span a surface")));
+		assert!(matches!(error, cadrum::Error::Refused(reason) if reason.contains("does not span a surface")));
 	}
 }
 
@@ -152,13 +152,19 @@ fn a_scale_law_sweep_reports_its_two_ends() {
 	let applied = apply(Algorithm::PipeShell { spine: &spine, sections: &[&section], frame: Frame::CorrectedFrenet, law: &law, tolerance: Some(TOLERANCE), solid: true }).expect("law sweep");
 	let expected = PI * 30.0 / 3.0 * (4.0 + 8.0 + 16.0);
 	assert!((applied.shape.volume().expect("volume integration") / expected - 1.0).abs() < 1.0e-6);
-	let [start, end] = applied.ends.expect("a sweep publishes its ends");
-	let rims: Vec<u64> = applied.shape.iter_edge().map(Edge::id).collect();
-	for end in [&start, &end] {
-		assert_eq!(end.iter_edge().count(), 1);
-		assert!(end.iter_edge().all(|edge| rims.contains(&edge.id())), "an end edge is an edge of the solid");
+	let topology = applied.shape.topology().expect("topology report");
+	let cap = |role: LandmarkRole| {
+		let landmark = applied.landmarks.iter().find(|landmark| landmark.role == role).unwrap_or_else(|| panic!("a sweep names its {role:?} section"));
+		topology.face_of(landmark.face).expect("a landmark is a face of the solid")
+	};
+	let (start, end) = (cap(LandmarkRole::First), cap(LandmarkRole::Last));
+	assert_ne!(start, end);
+	for face in [start, end] {
+		assert_eq!(topology.faces[face].edges.len(), 1, "a circular section caps with one rim");
 	}
-	assert_ne!(start.iter_edge().next().map(Edge::id), end.iter_edge().next().map(Edge::id));
+	let profile = section.iter_edge().next().expect("section edge").key();
+	let lateral = applied.lineage.iter().filter(|descent| descent.relation == Relation::Generated && descent.source == profile).filter_map(|descent| topology.face_of(descent.result)).count();
+	assert_eq!(lateral, 1, "the section edge generates the one lateral face");
 }
 
 #[test]
@@ -171,7 +177,7 @@ fn booleans_fuse_cut_and_common_two_blocks() {
 		let applied = apply(Algorithm::Boolean { expression: &expression }).expect("boolean");
 		let volume: f64 = applied.shape.components(ShapeKind::Solid).iter().map(Shape::volume).sum::<Result<f64, _>>().expect("volume integration");
 		assert!((volume - expected).abs() < 1.0e-6, "{operation:?}: {volume} vs {expected}");
-		assert!(!applied.history.is_empty(), "{operation:?} publishes face history");
+		assert!(!applied.history().is_empty(), "{operation:?} publishes face history");
 	}
 }
 
@@ -194,7 +200,7 @@ fn an_affine_transform_maps_every_face_onto_its_image() {
 	let matrix = [2.0, 0.0, 0.0, 5.0, 0.0, 3.0, 0.0, 7.0, 0.0, 0.0, 4.0, 11.0];
 	let applied = apply(Algorithm::Transform { shape: block.as_shape(), matrix }).expect("transform");
 	assert!((applied.shape.volume().expect("volume integration") - 24.0 * SIDE.powi(3)).abs() < 1.0e-6);
-	let sources: std::collections::HashSet<u64> = applied.history.iter().map(|[_, source]| *source).collect();
+	let sources: std::collections::HashSet<u64> = applied.history().iter().map(|[_, source]| *source).collect();
 	assert!(block.iter_face().all(|face| sources.contains(&face.id())), "every face has an image");
 	assert!(block.iter_edge().all(|edge| sources.contains(&edge.id())), "every edge has an image");
 }
@@ -234,7 +240,7 @@ fn unifying_a_fused_pair_merges_coplanar_faces() {
 	let fused = shape(apply(Algorithm::Boolean { expression: &expression }));
 	let unified = apply(Algorithm::Unify { shape: &fused }).expect("unify");
 	assert_eq!(unified.shape.iter_face().count(), 6, "two blocks in a row are one box");
-	assert!(!unified.history.is_empty());
+	assert!(!unified.history().is_empty());
 }
 
 /// The cube's upright edge at the origin corner, with the two faces it
@@ -299,10 +305,62 @@ fn defeaturing_removes_a_blend_and_heals_the_edge_it_rounded() {
 	let block = cube();
 	let (edge, _) = upright_corner(&block);
 	let rounded = apply(Algorithm::Fillet { shape: block.as_shape(), edges: &[edge], radius: 2.0, law: &[] }).expect("fillet");
-	let images: std::collections::HashSet<u64> = rounded.history.iter().map(|[image, _]| *image).collect();
+	let images: std::collections::HashSet<u64> = rounded.history().iter().map(|[image, _]| *image).collect();
 	let blend: Vec<&Face> = rounded.shape.iter_face().filter(|face| !images.contains(&face.id())).collect();
 	assert_eq!(blend.len(), 1, "one rounded edge leaves one face descending from none");
 	let healed = shape(apply(Algorithm::Defeaturing { shape: &rounded.shape, faces: &blend }));
 	assert_eq!(healed.iter_face().count(), 6, "the blend is gone and a box is a box again");
 	assert!((healed.volume().expect("volume integration") - block.volume().expect("volume integration")).abs() < 1.0e-6, "healed volume {} vs {}", healed.volume().expect("volume integration"), block.volume().expect("volume integration"));
+}
+
+/// What every face and edge lies on is read from the report as OCCT defines
+/// it, one typed row per kind: the primitive's own radius and axis come back,
+/// a rim's exact length is its circumference, and a degenerate edge states no
+/// curve at all.
+#[test]
+fn the_report_states_the_geometry_every_face_and_edge_lies_on() {
+	let cylinder = shape(apply(Algorithm::Cylinder { base: DVec3::ZERO, axis: DVec3::Z, radius: 2.0, height: 5.0 }));
+	let topology = cylinder.topology().expect("topology report");
+	let lateral: Vec<f64> = topology
+		.faces
+		.iter()
+		.filter_map(|face| match face.surface {
+			SurfaceDefinition::Cylinder { placement, radius } => {
+				assert!(placement.axis.abs_diff_eq(DVec3::Z, 1.0e-12), "the lateral surface stands on the built axis");
+				Some(radius)
+			}
+			_ => None,
+		})
+		.collect();
+	assert_eq!(lateral, [2.0]);
+	let caps: Vec<DVec3> = topology.faces.iter().filter_map(FaceFact::plane).map(|(_, normal)| normal).collect();
+	assert_eq!(caps.len(), 2);
+	assert!(caps.iter().any(|normal| normal.abs_diff_eq(DVec3::Z, 1.0e-12)) && caps.iter().any(|normal| normal.abs_diff_eq(-DVec3::Z, 1.0e-12)), "caps face outward: {caps:?}");
+	let curves: Vec<EdgeGeometry> = topology.edges.iter().filter_map(|edge| edge.geometry).collect();
+	assert_eq!(curves.len(), 3, "two rims and the seam");
+	for geometry in &curves {
+		match geometry.curve {
+			CurveDefinition::Circle { radius, .. } => {
+				assert_eq!(radius, 2.0);
+				assert!((geometry.length - 2.0 * PI * radius).abs() < 1.0e-9);
+			}
+			CurveDefinition::Line(_) => assert!((geometry.length - 5.0).abs() < 1.0e-9),
+			other => panic!("a cylinder has rims and a seam, not {other:?}"),
+		}
+	}
+
+	let sphere = shape(apply(Algorithm::Sphere { center: DVec3::ZERO, radius: 3.0 }));
+	let topology = sphere.topology().expect("topology report");
+	assert!(matches!(topology.faces[..], [FaceFact { surface: SurfaceDefinition::Sphere { radius, .. }, .. }] if radius == 3.0), "{:?}", topology.faces);
+	let (degenerate, meridians): (Vec<_>, Vec<_>) = topology.edges.iter().partition(|edge| edge.geometry.is_none());
+	assert_eq!(degenerate.len(), 2, "the poles are degenerate edges and state no curve");
+	assert_eq!(meridians.len(), 1, "the seam is the one curved edge");
+
+	let points = [DVec3::ZERO, DVec3::new(1.0, 1.0, 0.0), DVec3::new(2.0, 0.0, 1.0), DVec3::new(3.0, 1.0, 0.0)];
+	let spline = wire(&[Edge::bspline(&points, BSplineEnd::NotAKnot).expect("spline")]);
+	let topology = spline.topology().expect("topology report");
+	let [edge] = &topology.edges[..] else { panic!("one edge") };
+	let geometry = edge.geometry.expect("an interpolated edge has a curve");
+	assert!(matches!(geometry.curve, CurveDefinition::BSpline(SplineCurve { degree: 3, periodic: false, .. })), "{:?}", geometry.curve);
+	assert!(geometry.start.abs_diff_eq(points[0], 1.0e-9) && geometry.end.abs_diff_eq(points[3], 1.0e-9));
 }

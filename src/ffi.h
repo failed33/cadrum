@@ -74,7 +74,7 @@ bool shape_is_closed(const TopoDS_Shape& shape);
 std::unique_ptr<std::vector<TopoDS_Edge>> wire_ordered_edges(const TopoDS_Shape& shape);
 bool edge_is_reversed(const TopoDS_Edge& edge);
 std::unique_ptr<TopoDS_Shape> wire_planar_region(const TopoDS_Shape& shape, double tolerance,
-    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz);
+    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz, rust::Vec<uint64_t>& out_edges);
 bool planar_regions_coincide(const TopoDS_Shape& left, const TopoDS_Shape& right);
 // Topological kind as a stable code, mirrored by Rust's `ShapeKind`:
 // 0 null, 1 compound, 2 compsolid, 3 solid, 4 shell, 5 face, 6 wire, 7 edge,
@@ -105,6 +105,25 @@ void compound_add(TopoDS_Shape& compound, const TopoDS_Shape& child);
 // ==================== Meshing ====================
 
 MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bool relative);
+
+// ==================== Topology report (topology.cpp) ====================
+
+// Located identity: the TShape and the hash of the handle's location, the
+// pair `TopoDS_Shape::IsSame` compares. Internal helpers first, then the
+// bridge entry points.
+uint64_t shape_tshape(const TopoDS_Shape& shape);
+uint64_t shape_location(const TopoDS_Shape& shape);
+void shape_key(const TopoDS_Shape& shape, uint64_t& tshape, uint64_t& location);
+void face_key(const TopoDS_Face& face, uint64_t& tshape, uint64_t& location);
+void edge_key(const TopoDS_Edge& edge, uint64_t& tshape, uint64_t& location);
+
+struct TopologyData;
+struct NearestData;
+TopologyData shape_topology(const TopoDS_Shape& shape);
+NearestData shape_nearest(const TopoDS_Shape& shape, double x, double y, double z);
+// Point and unit tangent at `distance` along the edge's forward
+// parametrisation, into six doubles. False when the abscissa cannot be placed.
+bool edge_at_length(const TopoDS_Edge& edge, double distance, rust::Slice<double> out);
 
 // ==================== Topology enumeration ====================
 
@@ -235,17 +254,19 @@ void shape_vec_push_face(std::vector<TopoDS_Shape>& v, const TopoDS_Face& f);
 // ==================== The algorithm table ====================
 // One entry point over every OCCT algorithm the binding offers; the row codes
 // and the layout of `shapes` / `scalars` / `integers` per row are stated by
-// `occt::algorithm::Algorithm` in Rust and mirrored in ffi.cpp. `out_history`
-// receives flat `[post_id, source_id]` pairs; `out_ends` the two section
-// instances a sweep or loft places at its ends, when the builder has them.
-// Failure is a `std::runtime_error` naming the row; never a null shape.
+// `occt::algorithm::Algorithm` in Rust and mirrored in ffi.cpp. `out_lineage`
+// receives five words per descent (relation, result key, source key) and
+// `out_landmarks` three per landmark (role, face key); the codes are stated
+// by `occt::algorithm`. Failure is a `std::runtime_error` naming the row;
+// never a null shape.
 std::unique_ptr<TopoDS_Shape> apply_algorithm(
     uint32_t algorithm,
     const std::vector<TopoDS_Shape>& shapes,
     rust::Slice<const double> scalars,
     rust::Slice<const int64_t> integers,
-    rust::Vec<uint64_t>& out_history,
-    std::vector<TopoDS_Shape>& out_ends);
+    rust::Vec<uint64_t>& out_lineage,
+    rust::Vec<uint64_t>& out_landmarks,
+    bool& out_refused);
 
 // Free (single-adjacent) boundaries of an already sewn shape, as edges grouped
 // into loops: `out_loop_sizes` holds the edge count of each loop, in order.
@@ -269,12 +290,6 @@ std::unique_ptr<TopoDS_Shape> make_bspline_solid(
     bool u_periodic);
 
 // ==================== Face Methods ====================
-
-// Both helpers return the underlying TopoDS_TShape* address as a u64 — used
-// to track face/solid/edge identity across boolean ops, color maps, and BREP I/O.
-uint64_t face_tshape_id(const TopoDS_Face& face);
-uint64_t shape_tshape_id(const TopoDS_Shape& shape);
-uint64_t edge_tshape_id(const TopoDS_Edge& edge);
 
 // Project a 3D point onto `face`. Sister of `edge_project_point`.
 // Returns the closest point on the (trimmed) face surface and the outward

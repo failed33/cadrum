@@ -23,6 +23,10 @@
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
+#include <algorithm>
+#include <array>
 
 // --- Geometry primitives (gp / Geom / 2d) ---
 #include <gp_Ax1.hxx>
@@ -288,58 +292,50 @@ void compound_add(TopoDS_Shape& compound, const TopoDS_Shape& child) {
     builder.Add(compound, child);
 }
 
-// ==================== History relays ====================
-// Every row of the algorithm table below reports its history through these
-// two maps: `relay_from_builder` reads a builder's `Modified` / `IsDeleted`
-// for each input (an untouched input is its own descendant; a deleted one is
-// absent), `relay_from_copy` reads `BRepBuilderAPI_Copy` where a row copies
-// its result. `Generated` is deliberately not read: history is descent between
-// elements of one kind.
-//
-// Modified relations retain all source identities, including merges. Face and
-// edge history share one representation; consumers filter by result topology.
-using ShapeRelay = std::unordered_multimap<uint64_t, uint64_t>;
+// ==================== Lineage ====================
+// Every row reports where its result's faces, edges and vertices came from,
+// as `Descent{relation, result key, source key}` read through the builder's
+// `IsDeleted` / `Modified` / `Generated` for every sub-shape of every input.
+// A key is the located identity `topology.cpp` states; the relation codes are
+// mirrored by `occt::algorithm::Relation`.
+enum Relation : uint64_t { KEPT = 0, MODIFIED = 1, GENERATED = 2 };
+using Descent = std::array<uint64_t, 5>;
+using Lineage = std::vector<Descent>;
+using ShapeMap = NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>;
+
+static Descent descent(Relation relation, const TopoDS_Shape& result, const TopoDS_Shape& source) {
+    return {relation, shape_tshape(result), shape_location(result), shape_tshape(source), shape_location(source)};
+}
 
 template <typename Builder>
-static void relay_from_builder(
-    Builder& builder,
-    const TopoDS_Shape& src,
-    ShapeRelay& relay)
-{
-    for (const auto kind : {TopAbs_FACE, TopAbs_EDGE}) {
-        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> shapes;
+static void relay_from_builder(Builder& builder, const TopoDS_Shape& src, Lineage& lineage) {
+    for (const auto kind : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+        ShapeMap shapes;
         TopExp::MapShapes(src, kind, shapes);
         for (int index = 1; index <= shapes.Extent(); ++index) {
             const auto& original = shapes(index);
-            const auto source_id = reinterpret_cast<uint64_t>(original.TShape().get());
             if (builder.IsDeleted(original)) continue;
             const auto& modified = builder.Modified(original);
-            if (modified.IsEmpty()) {
-                relay.emplace(source_id, source_id);
-            } else {
-                for (NCollection_List<TopoDS_Shape>::Iterator it(modified); it.More(); it.Next()) {
-                    relay.emplace(reinterpret_cast<uint64_t>(it.Value().TShape().get()), source_id);
-                }
+            if (modified.IsEmpty()) lineage.push_back(descent(KEPT, original, original));
+            for (NCollection_List<TopoDS_Shape>::Iterator it(modified); it.More(); it.Next()) lineage.push_back(descent(MODIFIED, it.Value(), original));
+            // A builder that completed with a shape it cannot account for
+            // faults here; the shape still reaches the validity check.
+            try {
+                for (NCollection_List<TopoDS_Shape>::Iterator it(builder.Generated(original)); it.More(); it.Next()) lineage.push_back(descent(GENERATED, it.Value(), original));
+            } catch (const Standard_Failure&) {
             }
         }
     }
 }
 
-static void relay_from_copy(
-    BRepBuilderAPI_Copy& copier,
-    const TopoDS_Shape& source,
-    ShapeRelay& relay)
-{
-    for (const auto kind : {TopAbs_FACE, TopAbs_EDGE}) {
-        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> shapes;
+static void relay_from_copy(BRepBuilderAPI_Copy& copier, const TopoDS_Shape& source, Lineage& lineage) {
+    for (const auto kind : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+        ShapeMap shapes;
         TopExp::MapShapes(source, kind, shapes);
         for (int index = 1; index <= shapes.Extent(); ++index) {
             const auto& original = shapes(index);
             const auto copied = copier.ModifiedShape(original);
-            if (!copied.IsNull()) {
-                relay.emplace(reinterpret_cast<uint64_t>(copied.TShape().get()),
-                              reinterpret_cast<uint64_t>(original.TShape().get()));
-            }
+            if (!copied.IsNull()) lineage.push_back(descent(MODIFIED, copied, original));
         }
     }
 }
@@ -512,9 +508,11 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
         }
         if (measured <= mesh_budget) break;
         unchanged = measured >= best * (1.0 - std::sqrt(std::numeric_limits<double>::epsilon())) ? unchanged + 1 : 0;
-        if (unchanged >= 3 || parameters.Deflection <= Precision::Confusion()) {
+        // A gross estimator regression cannot justify another global refinement.
+        const bool diverged = measured > best * 100.0;
+        if (diverged || unchanged >= 3 || parameters.Deflection <= Precision::Confusion()) {
             std::ostringstream message;
-            message << "refinement " << (unchanged >= 3 ? "stalled" : "reached native precision")
+            message << "refinement " << (diverged ? "diverged" : unchanged >= 3 ? "stalled" : "reached native precision")
                     << ": requested=" << linear << ", measured=" << measured
                     << ", triangles=" << triangles << ", status=" << mesher.GetStatusFlags();
             throw std::runtime_error(message.str());
@@ -529,9 +527,11 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
 
     uint32_t global_vertex_offset = 0;
     uint32_t face_index = 0;
+    ShapeMap faces;
+    TopExp::MapShapes(shape, TopAbs_FACE, faces);
 
-    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
-        TopoDS_Face face = TopoDS::Face(explorer.Current());
+    for (int face_position = 1; face_position <= faces.Extent(); ++face_position) {
+        TopoDS_Face face = TopoDS::Face(faces(face_position));
         TopLoc_Location location;
         Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, location);
         // Nodal normals, taken from the underlying surface (GeomLib::NormEstim at
@@ -604,8 +604,6 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
             result.normals.push_back(n.Z());
         }
 
-        // Indices
-        uint64_t face_id = reinterpret_cast<uint64_t>(face.TShape().get());
         for (int i = 1; i <= nb_triangles; i++) {
             const Poly_Triangle& tri = triangulation->Triangle(i);
 
@@ -622,13 +620,40 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
                 result.indices.push_back(global_vertex_offset + n2 - 1);
                 result.indices.push_back(global_vertex_offset + n3 - 1);
             }
-            result.face_tshape_ids.push_back(face_id);
             result.face_indices.push_back(face_index);
         }
 
         global_vertex_offset += nb_nodes;
         if (face_index == std::numeric_limits<uint32_t>::max()) throw std::runtime_error("face index overflow");
         ++face_index;
+    }
+
+    // Each edge as the mesher discretised it on one of its faces, so the
+    // polyline lies on the triangle boundaries; an unmeshed edge is an empty
+    // range. Order is the report's.
+    ShapeMap edges;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> ancestors;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+    for (int edge_position = 1; edge_position <= edges.Extent(); ++edge_position) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(edge_position));
+        const auto start = static_cast<uint32_t>(result.edges.size() / 3);
+        if (const NCollection_List<TopoDS_Shape>* adjacent = ancestors.Seek(edge); adjacent && !adjacent->IsEmpty()) {
+            TopLoc_Location location;
+            const Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(TopoDS::Face(adjacent->First()), location);
+            const Handle(Poly_PolygonOnTriangulation) polygon = BRep_Tool::PolygonOnTriangulation(edge, triangulation, location);
+            if (!triangulation.IsNull() && !polygon.IsNull()) {
+                for (int node : polygon->Nodes()) {
+                    gp_Pnt point = triangulation->Node(node);
+                    point.Transform(location.Transformation());
+                    result.edges.push_back(point.X());
+                    result.edges.push_back(point.Y());
+                    result.edges.push_back(point.Z());
+                }
+            }
+        }
+        result.edge_ranges.push_back(start);
+        result.edge_ranges.push_back(static_cast<uint32_t>(result.edges.size() / 3));
     }
 
     return result;
@@ -661,7 +686,7 @@ std::unique_ptr<std::vector<TopoDS_Edge>> wire_ordered_edges(const TopoDS_Shape&
 
 std::unique_ptr<TopoDS_Shape> wire_planar_region(
     const TopoDS_Shape& shape, double tolerance,
-    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz)
+    double& ox, double& oy, double& oz, double& nx, double& ny, double& nz, rust::Vec<uint64_t>& out_edges)
 {
     if (shape.ShapeType() != TopAbs_WIRE || !BRep_Tool::IsClosed(shape)) return nullptr;
     if (std::isfinite(tolerance)) {
@@ -685,6 +710,15 @@ std::unique_ptr<TopoDS_Shape> wire_planar_region(
     if (builder.Face().Orientation() == TopAbs_REVERSED) normal.Reverse();
     ox = origin.X(); oy = origin.Y(); oz = origin.Z();
     nx = normal.X(); ny = normal.Y(); nz = normal.Z();
+    // The face's edges are copies of the wire's; state which is which.
+    for (TopExp_Explorer edge(shape, TopAbs_EDGE); edge.More(); edge.Next()) {
+        const TopoDS_Shape copied = copy.ModifiedShape(edge.Current());
+        if (copied.IsNull()) continue;
+        out_edges.push_back(shape_tshape(edge.Current()));
+        out_edges.push_back(shape_location(edge.Current()));
+        out_edges.push_back(shape_tshape(copied));
+        out_edges.push_back(shape_location(copied));
+    }
     return std::make_unique<TopoDS_Shape>(builder.Face());
 }
 
@@ -747,18 +781,6 @@ std::unique_ptr<TopoDS_Face> clone_face_handle(const TopoDS_Face& face) {
 }
 
 // ==================== Face Methods ====================
-
-uint64_t face_tshape_id(const TopoDS_Face& face) {
-    return reinterpret_cast<uint64_t>(face.TShape().get());
-}
-
-uint64_t shape_tshape_id(const TopoDS_Shape& shape) {
-    return reinterpret_cast<uint64_t>(shape.TShape().get());
-}
-
-uint64_t edge_tshape_id(const TopoDS_Edge& edge) {
-    return reinterpret_cast<uint64_t>(edge.TShape().get());
-}
 
 bool face_project_point(const TopoDS_Face& face,
     double px, double py, double pz,
@@ -1316,51 +1338,65 @@ struct Call {
     }
 };
 
+// Landmark roles, mirrored by `occt::algorithm::LandmarkRole`.
+enum Landmark : uint64_t { X_MIN = 0, X_MAX, Y_MIN, Y_MAX, Z_MIN, Z_MAX, BOTTOM, TOP, LATERAL, FIRST, LAST };
+
 struct Product {
     TopoDS_Shape shape;
-    ShapeRelay relay;
-    std::vector<TopoDS_Shape> ends;
-};
+    Lineage lineage;
+    std::vector<std::array<uint64_t, 3>> landmarks;
 
-// The two section instances a sweep or a loft places at its ends, for the
-// builders that publish them.
-template <class Builder>
-void ends_of(Builder& builder, std::vector<TopoDS_Shape>& ends) {
-    if constexpr (std::is_base_of_v<BRepPrimAPI_MakeSweep, Builder> || std::is_same_v<BRepOffsetAPI_ThruSections, Builder>) {
-        ends = {builder.FirstShape(), builder.LastShape()};
-    }
-}
-
-// The offset builders publish an offset face's image through `Generated` and
-// reserve `Modified` for the closing-face case, so neither map alone carries
-// their correspondence. This adapter presents their union where the relay
-// reads `Modified`, leaving an untouched input its own descendant.
-template <class Builder>
-struct OffsetImages {
-    Builder& builder;
-    NCollection_List<TopoDS_Shape> images;
-    bool IsDone() const { return builder.IsDone(); }
-    const TopoDS_Shape& Shape() { return builder.Shape(); }
-    bool IsDeleted(const TopoDS_Shape& shape) { return builder.IsDeleted(shape); }
-    const NCollection_List<TopoDS_Shape>& Modified(const TopoDS_Shape& shape) {
-        images.Clear();
-        for (NCollection_List<TopoDS_Shape>::Iterator kept(builder.Modified(shape)); kept.More(); kept.Next()) images.Append(kept.Value());
-        if (images.IsEmpty()) images.Append(shape);
-        for (NCollection_List<TopoDS_Shape>::Iterator made(builder.Generated(shape)); made.More(); made.Next()) images.Append(made.Value());
-        return images;
+    // Record the result face a builder names itself. A face is taken as it
+    // stands; a section wire names the result face bounded by exactly its
+    // edges. A shape the result does not carry (a full turn's cap) names
+    // nothing.
+    void landmark(Landmark role, const TopoDS_Shape& named) {
+        if (named.IsNull()) return;
+        ShapeMap faces;
+        TopExp::MapShapes(shape, TopAbs_FACE, faces);
+        TopoDS_Shape face;
+        if (named.ShapeType() == TopAbs_FACE) {
+            if (faces.Contains(named)) face = named;
+        } else {
+            ShapeMap wanted;
+            TopExp::MapShapes(named, TopAbs_EDGE, wanted);
+            for (int index = 1; index <= faces.Extent() && face.IsNull(); ++index) {
+                ShapeMap have;
+                TopExp::MapShapes(faces(index), TopAbs_EDGE, have);
+                bool same = have.Extent() == wanted.Extent() && wanted.Extent() > 0;
+                for (int edge = 1; same && edge <= wanted.Extent(); ++edge) same = have.Contains(wanted(edge));
+                if (same) face = faces(index);
+            }
+        }
+        if (!face.IsNull()) landmarks.push_back({role, shape_tshape(face), shape_location(face)});
     }
 };
 
-// What every row returns: the built shape, checked, with the history of every
+// What every row returns: the built shape, checked, with the lineage of every
 // input read through the builder.
 template <class Builder>
 Product done(Builder& builder, const Call& call) {
     if (!builder.IsDone()) throw std::runtime_error("did not complete");
     Product product{builder.Shape(), {}, {}};
     if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
-    for (const auto& input : call.shapes) relay_from_builder(builder, input, product.relay);
-    ends_of(builder, product.ends);
+    for (const auto& input : call.shapes) relay_from_builder(builder, input, product.lineage);
     return product;
+}
+
+// The faces a one-axis primitive names: bottom and top where it has them,
+// and its lateral face.
+template <class Primitive>
+void one_axis_landmarks(Product& product, Primitive& primitive) {
+    if (primitive.HasBottom()) product.landmark(BOTTOM, primitive.BottomFace());
+    if (primitive.HasTop()) product.landmark(TOP, primitive.TopFace());
+    product.landmark(LATERAL, primitive.LateralFace());
+}
+
+// The section a sweep or loft starts and ends with.
+template <class Builder>
+void sweep_landmarks(Product& product, Builder& builder) {
+    product.landmark(FIRST, builder.FirstShape());
+    product.landmark(LAST, builder.LastShape());
 }
 
 template <class Builder>
@@ -1440,23 +1476,40 @@ Product row(Row row, const Call& call) {
     switch (row) {
         case ROW_BOX: {
             BRepPrimAPI_MakeBox builder(call.pnt(0), call.pnt(3));
-            return built(builder, call);
+            Product product = built(builder, call);
+            // OCCT's own axis assignment: back and front bound X, left
+            // and right bound Y.
+            product.landmark(X_MIN, builder.BackFace());
+            product.landmark(X_MAX, builder.FrontFace());
+            product.landmark(Y_MIN, builder.LeftFace());
+            product.landmark(Y_MAX, builder.RightFace());
+            product.landmark(Z_MIN, builder.BottomFace());
+            product.landmark(Z_MAX, builder.TopFace());
+            return product;
         }
         case ROW_SPHERE: {
             BRepPrimAPI_MakeSphere builder(call.pnt(0), call.scalar(3));
-            return built(builder, call);
+            Product product = built(builder, call);
+            one_axis_landmarks(product, builder.Sphere());
+            return product;
         }
         case ROW_CYLINDER: {
             BRepPrimAPI_MakeCylinder builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7));
-            return built(builder, call);
+            Product product = built(builder, call);
+            one_axis_landmarks(product, builder.Cylinder());
+            return product;
         }
         case ROW_CONE: {
             BRepPrimAPI_MakeCone builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7), call.scalar(8));
-            return built(builder, call);
+            Product product = built(builder, call);
+            one_axis_landmarks(product, builder.Cone());
+            return product;
         }
         case ROW_TORUS: {
             BRepPrimAPI_MakeTorus builder(gp_Ax2(call.pnt(0), call.dir(3)), call.scalar(6), call.scalar(7));
-            return built(builder, call);
+            Product product = built(builder, call);
+            one_axis_landmarks(product, builder.Torus());
+            return product;
         }
         case ROW_HALF_SPACE: {
             // The material lies on the side the normal points to.
@@ -1477,11 +1530,15 @@ Product row(Row row, const Call& call) {
         }
         case ROW_PRISM: {
             BRepPrimAPI_MakePrism builder(call.shape(0), call.vec(0));
-            return built(builder, call);
+            Product product = built(builder, call);
+            sweep_landmarks(product, builder);
+            return product;
         }
         case ROW_REVOLUTION: {
             BRepPrimAPI_MakeRevol builder(call.shape(0), gp_Ax1(call.pnt(0), call.dir(3)), call.scalar(6));
-            return built(builder, call);
+            Product product = built(builder, call);
+            sweep_landmarks(product, builder);
+            return product;
         }
         case ROW_PIPE_SHELL: {
             // integers: [frame, sections, law samples, solid]
@@ -1529,7 +1586,9 @@ Product row(Row row, const Call& call) {
                 error = builder.ErrorOnSurface();
                 if (!std::isfinite(error) || error > tolerance) continue;
                 if (call.integer(3) != 0 && !builder.MakeSolid()) throw std::runtime_error("could not close the swept shell into a solid");
-                return done(builder, call);
+                Product product = done(builder, call);
+                sweep_landmarks(product, builder);
+                return product;
             }
             std::ostringstream message;
             message << "sweep approximation did not converge: requested " << tolerance << ", achieved " << error;
@@ -1539,13 +1598,14 @@ Product row(Row row, const Call& call) {
             BRepOffsetAPI_ThruSections builder(call.integer(1) != 0, call.integer(0) != 0, call.scalar(0));
             builder.SetMutableInput(false);
             for (const auto& section : call.shapes) builder.AddWire(TopoDS::Wire(section));
-            return built(builder, call);
+            Product product = built(builder, call);
+            sweep_landmarks(product, builder);
+            return product;
         }
         case ROW_OFFSET_SHAPE: {
             BRepOffsetAPI_MakeOffsetShape builder;
             builder.PerformByJoin(call.shape(0), call.scalar(0), call.scalar(1), BRepOffset_Skin, call.integer(1) != 0, false, join_type(static_cast<uint32_t>(call.integer(0)), "offset"), false);
-            OffsetImages<BRepOffsetAPI_MakeOffsetShape> images{builder, {}};
-            return done(images, call);
+            return done(builder, call);
         }
         case ROW_OFFSET_FACES: {
             BRepOffset_MakeOffset builder;
@@ -1558,15 +1618,12 @@ Product row(Row row, const Call& call) {
             BRepOffsetAPI_MakeThickSolid builder;
             builder.MakeThickSolidByJoin(call.shape(0), call.list(1, call.shapes.size()), call.scalar(0), call.scalar(1), BRepOffset_Skin, false, false, join_type(static_cast<uint32_t>(call.integer(0)), "thicken"));
             builder.Build();
-            OffsetImages<BRepOffsetAPI_MakeThickSolid> images{builder, {}};
-            Product product = done(images, call);
+            Product product = done(builder, call);
             // The builder does not flag the removed faces as deleted; nothing in
             // the result descends from them.
             for (size_t face = 1; face < call.shapes.size(); ++face) {
-                const auto removed = reinterpret_cast<uint64_t>(call.shape(face).TShape().get());
-                for (auto pair = product.relay.begin(); pair != product.relay.end();) {
-                    pair = pair->second == removed ? product.relay.erase(pair) : std::next(pair);
-                }
+                const uint64_t removed[2] = {shape_tshape(call.shape(face)), shape_location(call.shape(face))};
+                product.lineage.erase(std::remove_if(product.lineage.begin(), product.lineage.end(), [&](const Descent& entry) { return entry[3] == removed[0] && entry[4] == removed[1]; }), product.lineage.end());
             }
             return product;
         }
@@ -1608,9 +1665,7 @@ Product row(Row row, const Call& call) {
             Product product{sewing.SewedShape(), {}, {}};
             if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
             for (const auto& face : call.shapes) {
-                const auto source = reinterpret_cast<uint64_t>(face.TShape().get());
-                const TopoDS_Shape& sewn = sewing.IsModified(face) ? sewing.Modified(face) : face;
-                product.relay.emplace(reinterpret_cast<uint64_t>(sewn.TShape().get()), source);
+                product.lineage.push_back(sewing.IsModified(face) ? descent(MODIFIED, sewing.Modified(face), face) : descent(KEPT, face, face));
             }
             return product;
         }
@@ -1627,15 +1682,16 @@ Product row(Row row, const Call& call) {
             cells.Evaluate(call);
             // The result shares no geometry with its inputs: the copy severs
             // it, and its own history composes with the builder's.
-            ShapeRelay built_relay;
-            for (const auto& input : call.shapes) relay_from_builder(cells, input, built_relay);
+            Lineage built;
+            for (const auto& input : call.shapes) relay_from_builder(cells, input, built);
             BRepBuilderAPI_Copy copier(cells.Shape(), true, false);
-            ShapeRelay copied_relay;
-            relay_from_copy(copier, cells.Shape(), copied_relay);
+            Lineage copied;
+            relay_from_copy(copier, cells.Shape(), copied);
             Product product{copier.Shape(), {}, {}};
-            for (const auto& pair : copied_relay) {
-                const auto sources = built_relay.equal_range(pair.second);
-                for (auto source = sources.first; source != sources.second; ++source) product.relay.emplace(pair.first, source->second);
+            for (const Descent& copy : copied) {
+                for (const Descent& made : built) {
+                    if (made[1] == copy[3] && made[2] == copy[4]) product.lineage.push_back({made[0], copy[1], copy[2], made[3], made[4]});
+                }
             }
             return product;
         }
@@ -1718,12 +1774,16 @@ Product row(Row row, const Call& call) {
             if (product.shape.IsNull()) throw std::runtime_error("returned an empty shape");
             const Handle(BRepTools_History) history = builder.History();
             if (history.IsNull()) return product;
-            for (TopExp_Explorer faces(call.shape(0), TopAbs_FACE); faces.More(); faces.Next()) {
-                const TopoDS_Shape& face = faces.Current();
-                if (history->IsRemoved(face)) continue;
-                const auto& merged = history->Modified(face);
-                const TopoDS_Shape& post = merged.IsEmpty() ? face : merged.First();
-                product.relay.emplace(reinterpret_cast<uint64_t>(post.TShape().get()), reinterpret_cast<uint64_t>(face.TShape().get()));
+            for (const auto kind : {TopAbs_FACE, TopAbs_EDGE}) {
+                ShapeMap shapes;
+                TopExp::MapShapes(call.shape(0), kind, shapes);
+                for (int index = 1; index <= shapes.Extent(); ++index) {
+                    const TopoDS_Shape& original = shapes(index);
+                    if (history->IsRemoved(original)) continue;
+                    const auto& merged = history->Modified(original);
+                    if (merged.IsEmpty()) product.lineage.push_back(descent(KEPT, original, original));
+                    for (NCollection_List<TopoDS_Shape>::Iterator it(merged); it.More(); it.Next()) product.lineage.push_back(descent(MODIFIED, it.Value(), original));
+                }
             }
             return product;
         }
@@ -1770,22 +1830,29 @@ std::unique_ptr<TopoDS_Shape> apply_algorithm(
     const std::vector<TopoDS_Shape>& shapes,
     rust::Slice<const double> scalars,
     rust::Slice<const int64_t> integers,
-    rust::Vec<uint64_t>& out_history,
-    std::vector<TopoDS_Shape>& out_ends)
+    rust::Vec<uint64_t>& out_lineage,
+    rust::Vec<uint64_t>& out_landmarks,
+    bool& out_refused)
 {
     const std::string name(row_name(algorithm));
+    out_refused = false;
     try {
         Product product = row(static_cast<Row>(algorithm), Call{shapes, scalars, integers});
-        std::set<std::pair<uint64_t, uint64_t>> seen;
-        for (const auto& pair : product.relay) {
-            // Each pair once, in the order the relay yields it.
-            if (!seen.insert({pair.first, pair.second}).second) continue;
-            out_history.push_back(pair.first);
-            out_history.push_back(pair.second);
+        std::set<Descent> seen;
+        for (const Descent& entry : product.lineage) {
+            // Each descent once, in the order the rows yield it.
+            if (!seen.insert(entry).second) continue;
+            for (uint64_t word : entry) out_lineage.push_back(word);
         }
-        out_ends = std::move(product.ends);
+        for (const auto& landmark : product.landmarks) {
+            for (uint64_t word : landmark) out_landmarks.push_back(word);
+        }
         return std::make_unique<TopoDS_Shape>(product.shape);
     } catch (const Standard_Failure& error) {
+        throw std::runtime_error(name + ": " + error.what());
+    } catch (const std::invalid_argument& error) {
+        // A row's own refusal of its input, told apart from OCCT failing.
+        out_refused = true;
         throw std::runtime_error(name + ": " + error.what());
     } catch (const std::exception& error) {
         throw std::runtime_error(name + ": " + error.what());

@@ -222,7 +222,7 @@ fn link_occt_libraries(occt_include: &Path, occt_lib_dir: &Path, target: &str) {
 	}
 
 	let mut build = cxx_build::bridge("src/ffi.rs");
-	build.file("src/ffi.cpp").include(occt_include).std("c++17").define("_USE_MATH_DEFINES", None);
+	build.file("src/ffi.cpp").file("src/topology.cpp").include(occt_include).std("c++20").define("_USE_MATH_DEFINES", None);
 
 	apply_compiler_flags(|s| {
 		build.flag(s);

@@ -7,8 +7,204 @@ mod ffi_bridge {
 		vertices: Vec<f64>, // flat xyz
 		normals: Vec<f64>,  // flat xyz, one per vertex
 		indices: Vec<u32>,
-		face_tshape_ids: Vec<u64>, // per-triangle TShape* address
-		face_indices: Vec<u32>,    // per-triangle face occurrence in traversal order
+		face_indices: Vec<u32>, // per-triangle face position in the topology report
+		edges: Vec<f64>,        // flat xyz, the triangulation's own edge polylines
+		edge_ranges: Vec<u32>,  // [start, end) point range per edge, in report order
+	}
+
+	// ==================== The topology report ====================
+	//
+	// Every face, edge and vertex in `TopExp::MapShapes` order: one row per
+	// sub-shape in each `face_*`, `edge_*` and `vertex_*` column. The geometry
+	// a face or edge lies on is one row of the definition column its kind
+	// names, at `face_definition` / `edge_definition`; a kind without a column
+	// (other, degenerate) leaves that index unread. Incidence lists are CSR
+	// with one more offset than rows; an absent vertex index is `u32::MAX`.
+	// These structs are the schema: C++ fills them by field name and Rust
+	// parses them once, so no side counts words.
+
+	struct Xyz {
+		x: f64,
+		y: f64,
+		z: f64,
+	}
+	// `gp_Ax3` less its derived y axis: where an analytic surface or a conic
+	// stands and how it is parametrised.
+	struct PlacementData {
+		origin: Xyz,
+		axis: Xyz,
+		reference: Xyz,
+	}
+	struct AxisData {
+		origin: Xyz,
+		direction: Xyz,
+	}
+	struct KeyData {
+		tshape: u64,
+		location: u64,
+	}
+
+	// `GeomAbs_SurfaceType`, as this bridge numbers it.
+	enum SurfaceCode {
+		Plane,
+		Cylinder,
+		Cone,
+		Sphere,
+		Torus,
+		Bezier,
+		BSpline,
+		Revolution,
+		Extrusion,
+		Offset,
+		Other,
+	}
+	// `GeomAbs_CurveType`, as this bridge numbers it, plus the edge that has
+	// no curve at all.
+	enum CurveCode {
+		Line,
+		Circle,
+		Ellipse,
+		Hyperbola,
+		Parabola,
+		Bezier,
+		BSpline,
+		Offset,
+		Other,
+		Degenerate,
+	}
+
+	struct PlaneDef {
+		placement: PlacementData,
+	}
+	struct CylinderDef {
+		placement: PlacementData,
+		radius: f64,
+	}
+	struct ConeDef {
+		placement: PlacementData,
+		radius: f64,
+		semi_angle: f64,
+	}
+	struct SphereDef {
+		placement: PlacementData,
+		radius: f64,
+	}
+	struct TorusDef {
+		placement: PlacementData,
+		major_radius: f64,
+		minor_radius: f64,
+	}
+	struct SplineSurfaceDef {
+		u_degree: u32,
+		v_degree: u32,
+		u_poles: u32,
+		v_poles: u32,
+		u_periodic: bool,
+		v_periodic: bool,
+		rational: bool,
+	}
+	struct RevolutionDef {
+		axis: AxisData,
+	}
+	struct ExtrusionDef {
+		direction: Xyz,
+	}
+	struct OffsetDef {
+		offset: f64,
+	}
+	struct LineDef {
+		axis: AxisData,
+	}
+	struct CircleDef {
+		placement: PlacementData,
+		radius: f64,
+	}
+	struct EllipseDef {
+		placement: PlacementData,
+		major_radius: f64,
+		minor_radius: f64,
+	}
+	struct HyperbolaDef {
+		placement: PlacementData,
+		major_radius: f64,
+		minor_radius: f64,
+	}
+	struct ParabolaDef {
+		placement: PlacementData,
+		focal: f64,
+	}
+	struct SplineCurveDef {
+		degree: u32,
+		poles: u32,
+		periodic: bool,
+		rational: bool,
+	}
+	// The ends of an edge's curve in its forward parametrisation.
+	struct EdgeEnds {
+		start: Xyz,
+		start_tangent: Xyz,
+		end: Xyz,
+		end_tangent: Xyz,
+	}
+	struct ExtentData {
+		low: Xyz,
+		high: Xyz,
+	}
+
+	struct TopologyData {
+		face_keys: Vec<KeyData>,
+		face_surface: Vec<SurfaceCode>,
+		face_definition: Vec<u32>,
+		face_reversed: Vec<bool>,
+		face_tolerance: Vec<f64>,
+		face_edge_offsets: Vec<u32>,
+		face_edges: Vec<u32>,
+		edge_keys: Vec<KeyData>,
+		edge_curve: Vec<CurveCode>,
+		edge_definition: Vec<u32>,
+		edge_ends: Vec<EdgeEnds>, // zero, unread, for a degenerate edge
+		edge_length: Vec<f64>,
+		edge_tolerance: Vec<f64>,
+		edge_vertices: Vec<u32>, // start, end
+		edge_face_offsets: Vec<u32>,
+		edge_faces: Vec<u32>,
+		vertex_keys: Vec<KeyData>,
+		vertex_points: Vec<Xyz>,
+		vertex_tolerance: Vec<f64>,
+		planes: Vec<PlaneDef>,
+		cylinders: Vec<CylinderDef>,
+		cones: Vec<ConeDef>,
+		spheres: Vec<SphereDef>,
+		tori: Vec<TorusDef>,
+		spline_surfaces: Vec<SplineSurfaceDef>,
+		revolutions: Vec<RevolutionDef>,
+		extrusions: Vec<ExtrusionDef>,
+		surface_offsets: Vec<OffsetDef>,
+		lines: Vec<LineDef>,
+		circles: Vec<CircleDef>,
+		ellipses: Vec<EllipseDef>,
+		hyperbolas: Vec<HyperbolaDef>,
+		parabolas: Vec<ParabolaDef>,
+		spline_curves: Vec<SplineCurveDef>,
+		curve_offsets: Vec<OffsetDef>,
+		// The axis-aligned extent of the geometry itself; `bounded` is false
+		// for a shape with nothing to measure, whose `extent` is unread.
+		bounded: bool,
+		extent: ExtentData,
+	}
+
+	// The closest point of a shape to a probe: `support` is 0 for none,
+	// 1 vertex, 2 edge, 3 face; the normal is NaN unless the support is a face.
+	struct NearestData {
+		support: u32,
+		tshape: u64,
+		location: u64,
+		px: f64,
+		py: f64,
+		pz: f64,
+		nx: f64,
+		ny: f64,
+		nz: f64,
 	}
 
 	// Expose Rust stream types to C++ for streambuf callbacks
@@ -67,7 +263,9 @@ mod ffi_bridge {
 		fn shape_is_closed(shape: &TopoDS_Shape) -> bool;
 		fn wire_ordered_edges(shape: &TopoDS_Shape) -> Result<UniquePtr<CxxVector<TopoDS_Edge>>>;
 		fn edge_is_reversed(edge: &TopoDS_Edge) -> bool;
-		fn wire_planar_region(shape: &TopoDS_Shape, tolerance: f64, ox: &mut f64, oy: &mut f64, oz: &mut f64, nx: &mut f64, ny: &mut f64, nz: &mut f64) -> Result<UniquePtr<TopoDS_Shape>>;
+		// `out_edges` receives four words per wire edge: its key, then the key
+		// of the face's copy of it.
+		fn wire_planar_region(shape: &TopoDS_Shape, tolerance: f64, ox: &mut f64, oy: &mut f64, oz: &mut f64, nx: &mut f64, ny: &mut f64, nz: &mut f64, out_edges: &mut Vec<u64>) -> Result<UniquePtr<TopoDS_Shape>>;
 		fn planar_regions_coincide(left: &TopoDS_Shape, right: &TopoDS_Shape) -> Result<bool>;
 		// Codes mirrored by `occt::shape::ShapeKind`; see ffi.h.
 		fn shape_kind(shape: &TopoDS_Shape) -> u32;
@@ -88,6 +286,15 @@ mod ffi_bridge {
 
 		fn mesh_shape(shape: &TopoDS_Shape, linear: f64, angular: f64, relative: bool) -> Result<MeshData>;
 
+		// ==================== Topology report ====================
+
+		fn shape_topology(shape: &TopoDS_Shape) -> Result<TopologyData>;
+		fn shape_nearest(shape: &TopoDS_Shape, x: f64, y: f64, z: f64) -> Result<NearestData>;
+		fn edge_at_length(edge: &TopoDS_Edge, distance: f64, out: &mut [f64]) -> bool;
+		fn shape_key(shape: &TopoDS_Shape, tshape: &mut u64, location: &mut u64);
+		fn face_key(face: &TopoDS_Face, tshape: &mut u64, location: &mut u64);
+		fn edge_key(edge: &TopoDS_Edge, tshape: &mut u64, location: &mut u64);
+
 		// ==================== Topology enumeration ====================
 
 		fn shape_edges(shape: &TopoDS_Shape) -> UniquePtr<CxxVector<TopoDS_Edge>>;
@@ -101,10 +308,6 @@ mod ffi_bridge {
 		// ==================== Face Methods ====================
 
 		fn face_sample(face: &TopoDS_Face, u_fraction: f64, v_fraction: f64, result: &mut [f64]) -> Result<()>;
-
-		fn face_tshape_id(face: &TopoDS_Face) -> u64;
-		fn shape_tshape_id(shape: &TopoDS_Shape) -> u64;
-		fn edge_tshape_id(edge: &TopoDS_Edge) -> u64;
 
 		fn face_project_point(face: &TopoDS_Face, px: f64, py: f64, pz: f64, cpx: &mut f64, cpy: &mut f64, cpz: &mut f64, nx: &mut f64, ny: &mut f64, nz: &mut f64) -> bool;
 
@@ -142,7 +345,11 @@ mod ffi_bridge {
 
 		// ==================== The algorithm table ====================
 		// See `occt::algorithm`. Failure is a `cxx::Exception` naming the row.
-		fn apply_algorithm(algorithm: u32, shapes: &CxxVector<TopoDS_Shape>, scalars: &[f64], integers: &[i64], out_history: &mut Vec<u64>, out_ends: Pin<&mut CxxVector<TopoDS_Shape>>) -> Result<UniquePtr<TopoDS_Shape>>;
+		// `out_lineage` holds five words per descent: relation, result key,
+		// source key; `out_landmarks` three per landmark: role, face key.
+		// `out_refused` is set when the row refused its input before OCCT ran
+		// on it, so the failure is the caller's to correct.
+		fn apply_algorithm(algorithm: u32, shapes: &CxxVector<TopoDS_Shape>, scalars: &[f64], integers: &[i64], out_lineage: &mut Vec<u64>, out_landmarks: &mut Vec<u64>, out_refused: &mut bool) -> Result<UniquePtr<TopoDS_Shape>>;
 
 	}
 }
