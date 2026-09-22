@@ -484,6 +484,7 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
 
     // BRepMesh_IncrementalMesh(shape, linDeflection, isRelative, angDeflection, isInParallel)
     IMeshTools_Parameters parameters;
+    parameters.InParallel = true;
     const double merge_tolerance = relative ? 0.0 : std::min(Precision::Confusion(), linear * 0.001);
     const double mesh_budget = linear - merge_tolerance;
     parameters.Deflection = mesh_budget;
