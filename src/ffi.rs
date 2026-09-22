@@ -226,11 +226,7 @@ mod ffi_bridge {
 
 		// ==================== Shape I/O (streambuf callback) ====================
 
-		// Plain STEP I/O — used only without `color` feature.
-		// With color, STEP goes through XCAF (`read_step_color_stream` etc.).
-		#[cfg(not(feature = "color"))]
 		fn read_step_stream(reader: &mut RustReader) -> UniquePtr<TopoDS_Shape>;
-		#[cfg(not(feature = "color"))]
 		fn write_step_stream(shape: &TopoDS_Shape, writer: &mut RustWriter) -> bool;
 		// `out_consumed` = payload length, where the color trailer begins. Written only
 		// when the returned pointer is non-null.
@@ -242,14 +238,6 @@ mod ffi_bridge {
 		fn make_empty() -> UniquePtr<TopoDS_Shape>;
 
 		fn deep_copy(shape: &TopoDS_Shape) -> UniquePtr<TopoDS_Shape>;
-
-		// ==================== Colored STEP I/O (color feature only) ====================
-
-		#[cfg(feature = "color")]
-		fn read_step_color_stream(reader: &mut RustReader, out_ids: &mut Vec<u64>, out_rgb: &mut Vec<f32>) -> UniquePtr<TopoDS_Shape>;
-
-		#[cfg(feature = "color")]
-		fn write_step_color_stream(shape: &TopoDS_Shape, ids: &[u64], rgb: &[f32], writer: &mut RustWriter) -> bool;
 
 		// ==================== Placements (a moved handle, no rebuild) ====================
 

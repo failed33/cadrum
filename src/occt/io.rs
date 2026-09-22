@@ -3,10 +3,6 @@
 //! `impl SolidStruct for Solid` (`Solid::read_step`, `Solid::mesh`, ...).
 
 use super::compound::CompoundShape;
-#[cfg(feature = "color")]
-use super::ffi;
-#[cfg(feature = "color")]
-use super::ffi::{RustReader, RustWriter};
 use super::shape::Shape;
 #[cfg(feature = "color")]
 use super::shape::ShapeKind;
@@ -91,22 +87,12 @@ fn write_color_trailer<W: Write>(compound: &CompoundShape, writer: &mut W) -> Re
 // surface lives entirely on `Solid`.
 
 pub(super) fn read_step<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
+	let shape = Shape::read_step(reader)?;
 	#[cfg(feature = "color")]
-	{
-		let mut rust_reader = RustReader::from_ref(reader);
-		let mut ids: Vec<u64> = Default::default();
-		let mut rgb: Vec<f32> = Default::default();
-		let inner = ffi::read_step_color_stream(&mut rust_reader, &mut ids, &mut rgb);
-		if inner.is_null() {
-			return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "step: reader produced no shape (invalid or corrupted input)")));
-		}
-		let colormap: std::collections::HashMap<u64, Color> = ids.into_iter().zip(rgb.chunks_exact(3)).map(|(id, c)| (id, Color { r: c[0], g: c[1], b: c[2] })).collect();
-		Ok(CompoundShape::from_shape(Shape::new(inner), colormap).decompose())
-	}
+	let compound = CompoundShape::from_shape(shape, Default::default());
 	#[cfg(not(feature = "color"))]
-	{
-		Ok(CompoundShape::from_shape(Shape::read_step(reader)?).decompose())
-	}
+	let compound = CompoundShape::from_shape(shape);
+	Ok(compound.decompose())
 }
 
 pub(super) fn read_brep<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
@@ -125,32 +111,10 @@ pub(super) fn read_brep<R: Read>(reader: &mut R) -> Result<Vec<Solid>, Error> {
 	}
 }
 
-/// Write solids to a STEP stream.
-///
-/// With the `color` feature enabled, face colors are automatically embedded
-/// in the STEP file (XDE / AP214 styled items).
+/// Write solids to a STEP stream. Geometry only: colours travel in the BRep
+/// trailer, never in STEP.
 pub(super) fn write_step<'a, W: Write>(solids: impl IntoIterator<Item = &'a Solid>, writer: &mut W) -> Result<(), Error> {
-	let compound = CompoundShape::new(solids);
-	#[cfg(feature = "color")]
-	{
-		let colormap = compound.colormap();
-		let mut ids: Vec<u64> = Vec::with_capacity(colormap.len());
-		let mut rgb: Vec<f32> = Vec::with_capacity(colormap.len() * 3);
-		for (&id, c) in colormap {
-			ids.push(id);
-			rgb.extend_from_slice(&[c.r, c.g, c.b]);
-		}
-		let mut rust_writer = RustWriter::from_ref(writer);
-		if ffi::write_step_color_stream(compound.shape().inner(), &ids, &rgb, &mut rust_writer) {
-			Ok(())
-		} else {
-			Err(Error::Io(std::io::Error::other("step: OCCT writer reported failure")))
-		}
-	}
-	#[cfg(not(feature = "color"))]
-	{
-		Shape::write_step([compound.shape()], writer)
-	}
+	Shape::write_step([CompoundShape::new(solids).shape()], writer)
 }
 
 pub(super) fn write_brep<'a, W: Write>(solids: impl IntoIterator<Item = &'a Solid>, writer: &mut W) -> Result<(), Error> {

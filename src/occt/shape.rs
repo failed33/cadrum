@@ -24,7 +24,6 @@
 use super::edge::Edge;
 use super::face::Face;
 use super::ffi;
-#[cfg(not(feature = "color"))]
 use super::ffi::RustReader;
 use super::ffi::RustWriter;
 use super::topology::{Key, Nearest, Topology};
@@ -346,7 +345,6 @@ impl Shape {
 	}
 
 	/// Read a STEP stream as one shape, without colours.
-	#[cfg(not(feature = "color"))]
 	pub fn read_step<R: Read>(reader: &mut R) -> Result<Shape, Error> {
 		let mut rust_reader = RustReader::from_ref(reader);
 		let inner = ffi::read_step_stream(&mut rust_reader);
@@ -357,7 +355,6 @@ impl Shape {
 	}
 
 	/// Write shapes as one STEP stream, without colours.
-	#[cfg(not(feature = "color"))]
 	pub fn write_step<'a, W: Write>(shapes: impl IntoIterator<Item = &'a Shape>, writer: &mut W) -> Result<(), Error> {
 		let mut rust_writer = RustWriter::from_ref(writer);
 		if ffi::write_step_stream(&Shape::compound(shapes).inner, &mut rust_writer) {

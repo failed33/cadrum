@@ -123,15 +123,12 @@
 #include <Precision.hxx>
 
 // --- I/O (BREP / STEP / progress) ---
-// STEP-specific headers are only needed by the non-color STEP path
-// (`read_step_stream` / `write_step_stream`); with color, STEP routes
-// through XCAF in the FEATURE_COLOR section below.
 #include <BinTools.hxx>
-#ifndef FEATURE_COLOR
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
+#include <ShapeFix_Shape.hxx>
+#include <BRepLib_CheckCurveOnSurface.hxx>
 #include <Message_ProgressRange.hxx>
-#endif
 #include <Message.hxx>
 
 // --- C++ standard library ---
@@ -2210,8 +2207,44 @@ bool write_brep_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     return os.good();
 }
 
-#ifndef FEATURE_COLOR
-// Plain STEP I/O — used only when FEATURE_COLOR is not defined.
+// A translated edge declares a tolerance its pcurves may not honour: the exact
+// validity check measures the true curve-on-surface deviation and refuses the
+// face when it exceeds the declared value. Widening each edge's tolerance to
+// what the same measurement reports states the geometry as it is.
+static void widen_edge_tolerances_to_measured_deviation(const TopoDS_Shape& shape) {
+    BRep_Builder builder;
+    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(faces.Current());
+        for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+            const TopoDS_Edge& edge = TopoDS::Edge(edges.Current());
+            if (BRep_Tool::Degenerated(edge)) continue;
+            BRepLib_CheckCurveOnSurface deviation(edge, face);
+            deviation.Perform();
+            if (!deviation.IsDone()) continue;
+            const double measured = deviation.MaxDistance() + Precision::Confusion();
+            if (measured > BRep_Tool::Tolerance(edge)) builder.UpdateEdge(edge, measured);
+        }
+    }
+}
+
+// Geometry from another kernel arrives with its own tolerances and edge
+// orientations; `ShapeFix_Shape` is OCCT's standard repair for a translated
+// shape, and without it the exact validity check refuses ordinary vendor files.
+// A repair that faults leaves the translated shape to that check.
+static TopoDS_Shape heal_translated(const TopoDS_Shape& shape) {
+    if (shape.IsNull()) return shape;
+    try {
+        Handle(ShapeFix_Shape) fixer = new ShapeFix_Shape(shape);
+        fixer->Perform(Message_ProgressRange());
+        TopoDS_Shape healed = fixer->Shape();
+        widen_edge_tolerances_to_measured_deviation(healed);
+        return healed;
+    } catch (const Standard_Failure&) {
+        return shape;
+    }
+}
+
+// Plain STEP I/O: geometry only, through `STEPControl_Reader` / `STEPControl_Writer`.
 std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader) {
     RustReadStreambuf sbuf(reader);
     std::istream is(&sbuf);
@@ -2225,7 +2258,7 @@ std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader) {
 
     step_reader.TransferRoots(Message_ProgressRange());
     return std::make_unique<TopoDS_Shape>(
-        try_sew_orphan_faces(step_reader.OneShape(), nullptr));
+        heal_translated(try_sew_orphan_faces(step_reader.OneShape(), nullptr)));
 }
 
 bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer) {
@@ -2237,7 +2270,6 @@ bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer) {
     }
     return step_writer.WriteStream(os) == IFSelect_RetDone;
 }
-#endif // !FEATURE_COLOR
 
 void face_sample(const TopoDS_Face& face, double u_fraction, double v_fraction, rust::Slice<double> result) {
     if (result.size() != 9 || !std::isfinite(u_fraction) || !std::isfinite(v_fraction))
@@ -2269,191 +2301,3 @@ void face_sample(const TopoDS_Face& face, double u_fraction, double v_fraction, 
 }
 
 } // namespace cadrum
-
-#ifdef FEATURE_COLOR
-
-#include <XCAFDoc_DocumentTool.hxx>
-#include <XCAFDoc_ShapeTool.hxx>
-#include <XCAFDoc_ColorTool.hxx>
-#include <STEPCAFControl_Reader.hxx>
-#include <STEPCAFControl_Writer.hxx>
-#include <TDocStd_Document.hxx>
-#include <TDF_ChildIterator.hxx>
-#include <NCollection_Sequence.hxx>
-#include <TDF_Label.hxx>
-#include <Quantity_Color.hxx>
-
-namespace cadrum {
-
-// Face and solid keys share one map: a TShape* is unique across shape types. Solid
-// color is NOT expanded onto faces — that would turn one STYLED_ITEM into N on write.
-static void collect_colors(
-    const Handle(TDocStd_Document)& doc,
-    const Handle(XCAFDoc_ColorTool)& colorTool,
-    std::unordered_map<uint64_t, std::array<float, 3>>& colorMap)
-{
-    for (TDF_ChildIterator it(doc->Main(), true); it.More(); it.Next()) {
-        const TDF_Label& label = it.Value();
-        if (!XCAFDoc_ShapeTool::IsShape(label)) continue;
-
-        TopoDS_Shape s = XCAFDoc_ShapeTool::GetShape(label);
-        if (s.IsNull()) continue;
-
-        // Surface style first, generic style as the fallback.
-        Quantity_Color color;
-        if (colorTool->GetColor(label, XCAFDoc_ColorSurf, color) ||
-            colorTool->GetColor(label, XCAFDoc_ColorGen, color)) {
-            if (s.ShapeType() == TopAbs_FACE) {
-                colorMap[reinterpret_cast<uint64_t>(s.TShape().get())] = {
-                    (float)color.Red(), (float)color.Green(), (float)color.Blue()};
-            } else {
-                // A label's shape may be a COMPOUND/COMPSOLID — an assembly, or a
-                // product of several bodies — which is a level STEP often styles.
-                for (TopExp_Explorer ex(s, TopAbs_SOLID); ex.More(); ex.Next()) {
-                    colorMap[reinterpret_cast<uint64_t>(ex.Current().TShape().get())] = {
-                        (float)color.Red(), (float)color.Green(), (float)color.Blue()};
-                }
-            }
-        }
-    }
-}
-
-std::unique_ptr<TopoDS_Shape> read_step_color_stream(
-    RustReader&          reader,
-    rust::Vec<uint64_t>& out_ids,
-    rust::Vec<float>&    out_rgb)
-{
-    try {
-        // Create XDE document directly — avoids XCAFApp_Application which
-        // pulls in visualization libs (TKXCAFPrs/TKTPrsStd) built with
-        // BUILD_MODULE_Visualization=OFF.  Handle<> ref-counts ownership.
-        Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
-
-        STEPCAFControl_Reader cafreader;
-        cafreader.SetColorMode(true);
-
-        RustReadStreambuf sbuf(reader);
-        std::istream is(&sbuf);
-        if (cafreader.ReadStream("stream", is) != IFSelect_RetDone) {
-            return nullptr;
-        }
-        if (!cafreader.Transfer(doc)) {
-            return nullptr;
-        }
-
-        Handle(XCAFDoc_ShapeTool) shapeTool =
-            XCAFDoc_DocumentTool::ShapeTool(doc->Main());
-        Handle(XCAFDoc_ColorTool) colorTool =
-            XCAFDoc_DocumentTool::ColorTool(doc->Main());
-
-        // Collect all free shapes into a compound.
-        NCollection_Sequence<TDF_Label> roots;
-        shapeTool->GetFreeShapes(roots);
-
-        BRep_Builder builder;
-        TopoDS_Compound compound;
-        builder.MakeCompound(compound);
-        for (int i = 1; i <= roots.Length(); i++) {
-            builder.Add(compound, shapeTool->GetShape(roots.Value(i)));
-        }
-
-        std::unordered_map<uint64_t, std::array<float, 3>> colorMap;
-        collect_colors(doc, colorTool, colorMap);
-
-        // Recover Solids from disjoint shells / loose faces (#129); also remaps
-        // colorMap keys for faces whose TShape* changed during sewing.
-        TopoDS_Shape post = try_sew_orphan_faces(compound, &colorMap);
-
-        // Walk the POST-processed shape so sewing's new TShape* are picked up, and
-        // entries it no longer holds are dropped by not being reached.
-        auto emit = [&](const TopoDS_Shape& sub) {
-            uint64_t id = reinterpret_cast<uint64_t>(sub.TShape().get());
-            auto it = colorMap.find(id);
-            if (it == colorMap.end()) return;
-            out_ids.push_back(id);
-            out_rgb.push_back(it->second[0]);
-            out_rgb.push_back(it->second[1]);
-            out_rgb.push_back(it->second[2]);
-        };
-        for (TopExp_Explorer ex(post, TopAbs_FACE); ex.More(); ex.Next()) {
-            emit(ex.Current());
-        }
-        for (TopExp_Explorer ex(post, TopAbs_SOLID); ex.More(); ex.Next()) {
-            emit(ex.Current());
-        }
-
-        return std::make_unique<TopoDS_Shape>(post);
-    } catch (const Standard_Failure&) {
-        return nullptr;
-    }
-}
-
-bool write_step_color_stream(
-    const TopoDS_Shape&         shape,
-    rust::Slice<const uint64_t> ids,
-    rust::Slice<const float>    rgb,
-    RustWriter&                 writer)
-{
-    try {
-        Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
-
-        Handle(XCAFDoc_ShapeTool) shapeTool =
-            XCAFDoc_DocumentTool::ShapeTool(doc->Main());
-        Handle(XCAFDoc_ColorTool) colorTool =
-            XCAFDoc_DocumentTool::ColorTool(doc->Main());
-
-        // Register the root shape.
-        TDF_Label rootLabel = shapeTool->AddShape(shape, false);
-
-        // One lookup for both levels: which explorer finds an id decides the level
-        // it is written at.
-        std::unordered_map<uint64_t, std::array<float, 3>> colorLookup;
-        for (size_t i = 0; i < ids.size(); i++) {
-            colorLookup[ids[i]] = {rgb[3*i], rgb[3*i+1], rgb[3*i+2]};
-        }
-
-        // Find/create the sub-shape label of `sub` and paint it.
-        auto set_color = [&](const TopoDS_Shape& sub, const std::array<float, 3>& c) {
-            TDF_Label label;
-            if (!shapeTool->FindSubShape(rootLabel, sub, label)) {
-                label = shapeTool->AddSubShape(rootLabel, sub);
-            }
-            Quantity_Color color(c[0], c[1], c[2], Quantity_TOC_RGB);
-            colorTool->SetColor(label, color, XCAFDoc_ColorSurf);
-        };
-
-        // Solids first: a face style is the more specific one and must be set after.
-        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
-            const TopoDS_Shape& solid = ex.Current();
-            auto it = colorLookup.find(
-                reinterpret_cast<uint64_t>(solid.TShape().get()));
-            if (it == colorLookup.end()) continue;
-            set_color(solid, it->second);
-        }
-
-        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
-            const TopoDS_Shape& face = ex.Current();
-            auto it = colorLookup.find(
-                reinterpret_cast<uint64_t>(face.TShape().get()));
-            if (it == colorLookup.end()) continue;
-            set_color(face, it->second);
-        }
-
-        // Transfer XDE doc to STEP model and write to stream.
-        STEPCAFControl_Writer cafwriter;
-        cafwriter.SetColorMode(true);
-        if (!cafwriter.Transfer(doc)) {
-            return false;
-        }
-
-        RustWriteStreambuf sbuf(writer);
-        std::ostream os(&sbuf);
-        return cafwriter.ChangeWriter().WriteStream(os) == IFSelect_RetDone;
-    } catch (const Standard_Failure&) {
-        return false;
-    }
-}
-
-} // namespace cadrum
-
-#endif // FEATURE_COLOR

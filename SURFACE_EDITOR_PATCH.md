@@ -83,6 +83,19 @@ station), `Shape::nearest` (`BRepExtrema_DistShapeShape` support and closest
 point, with the face normal at the hit), `Shape::planar_region` reporting
 which face edge copies which wire edge, and the mass properties.
 
+## STEP I/O
+
+STEP reading and writing go through OCCT's plain `STEPControl_Reader` and
+`STEPControl_Writer` only (`read_step_stream` / `write_step_stream`). The
+XCAF colour variant and the `TKXCAF`, `TKLCAF`, `TKCAF` and `TKCDF` toolkits
+it linked are removed: colours travel in the BRep trailer, never in STEP. The
+reader transfers every root into one shape, sews loose faces into solids and
+runs `ShapeFix_Shape`, OCCT's standard repair for translated geometry, then
+widens each edge's tolerance to the curve-on-surface deviation
+`BRepLib_CheckCurveOnSurface` measures, the same measurement the exact
+validity check applies, so ordinary vendor files pass that check. OCCT converts the file's
+declared length unit to millimetres on read.
+
 ## Open surfaces
 
 A shell carrier now sits beside `Solid`. `Shell` is a single `TopAbs_SHELL`,

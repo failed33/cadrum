@@ -27,12 +27,8 @@ bool shape_is_valid(const TopoDS_Shape& shape);
 
 // ==================== Shape I/O (streambuf callback) ====================
 
-// Plain STEP I/O — only built without FEATURE_COLOR; with color, STEP goes
-// through XCAF (`read_step_color_stream` etc.) instead.
-#ifndef FEATURE_COLOR
 std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader);
 bool write_step_stream(const TopoDS_Shape& shape, RustWriter& writer);
-#endif
 // `out_consumed` = length of the BinTools payload, where Rust's color trailer
 // begins. Written ONLY on success; on failure nullptr comes back and it is untouched.
 std::unique_ptr<TopoDS_Shape> read_brep_stream(
@@ -324,29 +320,3 @@ static void trycatch(Try&& func, Fail&& fail) noexcept {
     }
 }
 } // namespace rust::behavior
-
-#ifdef FEATURE_COLOR
-
-namespace cadrum {
-
-// ==================== Colored STEP I/O ====================
-
-// `out_ids` = TShape* of each colored sub-shape, `out_rgb` = flat [r,g,b,...] in
-// OCC native space. An id is a FACE's or a SOLID's — a styled_item targets either.
-// Returns nullptr on failure.
-std::unique_ptr<TopoDS_Shape> read_step_color_stream(
-    RustReader&          reader,
-    rust::Vec<uint64_t>& out_ids,
-    rust::Vec<float>&    out_rgb);
-
-// A solid id is written as one styled_item on that solid; a face style, being the
-// more specific one, overrides it.
-bool write_step_color_stream(
-    const TopoDS_Shape&         shape,
-    rust::Slice<const uint64_t> ids,
-    rust::Slice<const float>    rgb,
-    RustWriter&                 writer);
-
-} // namespace cadrum
-
-#endif // FEATURE_COLOR
