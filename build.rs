@@ -223,6 +223,10 @@ fn link_occt_libraries(occt_include: &Path, occt_lib_dir: &Path, target: &str) {
 
 	let mut build = cxx_build::bridge("src/ffi.rs");
 	build.file("src/ffi.cpp").file("src/topology.cpp").include(occt_include).std("c++20").define("_USE_MATH_DEFINES", None);
+	// cxx declares `cxxbridge1$rust_vec$T$new(Vec<T> const *)` and hands it the
+	// uninitialized `this` of `Vec<T>::Vec()`; GCC's uninitialized-use analysis
+	// reports every shared-struct instantiation. Clang and MSVC ignore the flag.
+	build.flag_if_supported("-Wno-maybe-uninitialized");
 
 	apply_compiler_flags(|s| {
 		build.flag(s);
