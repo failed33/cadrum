@@ -5,6 +5,11 @@ use crate::traits::{BSplineEnd, EdgeStruct, Transform};
 use glam::DVec3;
 
 /// An edge topology shape.
+/// Native topology may be shared with another carrier, so it stays on one thread.
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<cadrum::Edge>();
+/// ```
 pub struct Edge {
 	pub(crate) inner: cxx::UniquePtr<ffi::TopoDS_Edge>,
 }

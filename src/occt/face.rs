@@ -11,6 +11,11 @@ use std::sync::OnceLock;
 /// matching the pattern used by `Solid`. Faces yielded from `Solid::iter_face`
 /// are constructed fresh each time the parent solid's face cache is built, so
 /// the OnceLock matches the lifetime of the enclosing `Vec<Face>`.
+/// Native topology may be shared with another carrier, so it stays on one thread.
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<cadrum::Face>();
+/// ```
 pub struct Face {
 	pub(crate) inner: cxx::UniquePtr<ffi::TopoDS_Face>,
 	edges: OnceLock<Vec<Edge>>,

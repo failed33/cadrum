@@ -97,6 +97,11 @@ pub struct PlanarRegion {
 /// A native shape of any kind, with its edges and faces enumerated on first
 /// use. The caches belong to this handle: a shape returned by the table or
 /// by a placement is a fresh carrier with fresh caches.
+/// Native topology may be shared by shallow clones, so it stays on one thread.
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<cadrum::Shape>();
+/// ```
 pub struct Shape {
 	inner: cxx::UniquePtr<ffi::TopoDS_Shape>,
 	edges: OnceLock<Vec<Edge>>,

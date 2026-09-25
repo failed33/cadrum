@@ -6,6 +6,10 @@ Upstream source and MIT license are retained. OCCT has its own license.
 OCCT is downloaded separately; the `patches/` files modify that dependency,
 while changes to Cadrum itself are made directly in this fork.
 
+The fork removes `unsafe impl Send` from `TopoDS_Shape`, `TopoDS_Face`, and
+`TopoDS_Edge`; their OCCT handles must stay on their owning native worker.
+Compile-fail examples on the corresponding public types document the boundary.
+
 This copy allows adding missing bindings without changing Cargo registry files.
 Only `cad-kernel` may depend on it. Do not add project or vessel policy here.
 
