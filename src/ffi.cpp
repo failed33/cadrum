@@ -116,6 +116,7 @@
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <NCollection_Array1.hxx>
 #include <NCollection_Array2.hxx>
@@ -980,6 +981,43 @@ std::unique_ptr<TopoDS_Edge> make_arc_edge(
         GC_MakeArcOfCircle maker(p_start, p_mid, p_end);
         if (!maker.IsDone()) return nullptr;
         BRepBuilderAPI_MakeEdge edgeMaker(maker.Value());
+        if (!edgeMaker.IsDone()) return nullptr;
+        return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    }
+}
+
+// `Law_Interpol` through (station, value) samples, exactly as the PipeShell
+// row builds a sweep's scale law, evaluated at each requested station.
+bool law_interpol_values(rust::Slice<const double> stations, rust::Slice<const double> values, bool periodic, rust::Slice<const double> at, rust::Slice<double> out)
+{
+    if (stations.size() < 2 || stations.size() != values.size() || at.size() != out.size()) return false;
+    try {
+        NCollection_Array1<gp_Pnt2d> samples(1, static_cast<int>(stations.size()));
+        for (size_t sample = 0; sample < stations.size(); ++sample) {
+            samples.SetValue(static_cast<int>(sample + 1), gp_Pnt2d(stations[sample], values[sample]));
+        }
+        Handle(Law_Interpol) law = new Law_Interpol();
+        law->Set(samples, periodic);
+        for (size_t index = 0; index < at.size(); ++index) out[index] = law->Value(at[index]);
+        return true;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+// Bezier edge over its control points (flat xyz triples, 2..=25 poles).
+std::unique_ptr<TopoDS_Edge> make_bezier_edge(rust::Slice<const double> coords)
+{
+    if (coords.size() < 6 || coords.size() % 3 != 0 || coords.size() / 3 > 25) return nullptr;
+    try {
+        NCollection_Array1<gp_Pnt> poles(1, static_cast<int>(coords.size() / 3));
+        for (int i = poles.Lower(); i <= poles.Upper(); ++i) {
+            const size_t at = static_cast<size_t>(i - 1) * 3;
+            poles.SetValue(i, gp_Pnt(coords[at], coords[at + 1], coords[at + 2]));
+        }
+        BRepBuilderAPI_MakeEdge edgeMaker(Handle(Geom_BezierCurve)(new Geom_BezierCurve(poles)));
         if (!edgeMaker.IsDone()) return nullptr;
         return std::make_unique<TopoDS_Edge>(edgeMaker.Edge());
     } catch (const Standard_Failure&) {

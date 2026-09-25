@@ -75,3 +75,27 @@ fn project_on_bspline_converges_to_interpolant() {
 	// Tangent is unit-length.
 	assert!((tg.length() - 1.0).abs() < TOL, "|tg|={}", tg.length());
 }
+
+#[test]
+fn bezier_passes_its_end_poles_and_its_exact_apex() {
+	// Symmetric cubic: B(0.5) = (P0 + 3 P1 + 3 P2 + P3) / 8 = (1, 0.75, 0), the apex.
+	let poles = [DVec3::ZERO, DVec3::new(0.0, 1.0, 0.0), DVec3::new(2.0, 1.0, 0.0), DVec3::new(2.0, 0.0, 0.0)];
+	let e = Edge::bezier(poles.iter()).unwrap();
+	assert!(approx_eq(e.start_point(), poles[0], TOL) && approx_eq(e.end_point(), poles[3], TOL));
+	let (cp, _) = e.project(DVec3::new(1.0, 2.0, 0.0));
+	assert!(approx_eq(cp, DVec3::new(1.0, 0.75, 0.0), TOL), "cp={cp:?}");
+	// A handle collapsed onto its end pole is a valid control point.
+	assert!(Edge::bezier([DVec3::ZERO, DVec3::ZERO, DVec3::X, DVec3::X * 2.0].iter()).is_ok());
+	assert!(Edge::bezier([DVec3::ZERO].iter()).is_err());
+}
+
+#[test]
+fn at_length_states_the_fraction_of_the_parameter_range_it_reached() {
+	let line = Edge::line(DVec3::ZERO, DVec3::new(8.0, 0.0, 0.0)).unwrap();
+	let (point, _, parameter) = line.at_length(2.0).unwrap();
+	assert!(approx_eq(point, DVec3::new(2.0, 0.0, 0.0), TOL), "{point:?}");
+	assert!((parameter - 0.25).abs() < TOL, "{parameter}");
+	let poles = [DVec3::ZERO, DVec3::new(0.0, 1.0, 0.0), DVec3::new(2.0, 1.0, 0.0), DVec3::new(2.0, 0.0, 0.0)];
+	let (start, _, first) = Edge::bezier(poles.iter()).unwrap().at_length(0.0).unwrap();
+	assert!(approx_eq(start, poles[0], TOL) && first.abs() < TOL, "{first}");
+}

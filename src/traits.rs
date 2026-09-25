@@ -373,6 +373,10 @@ pub trait EdgeStruct: Sized + Clone + Debug + Transform {
 	/// and `end`, or if any pair of points coincides.
 	fn arc_3pts(start: DVec3, mid: DVec3, end: DVec3) -> Result<Self, Error>;
 
+	/// Bezier curve over its control points: it starts at the first, ends at
+	/// the last and is pulled towards the others. 2 to 25 points.
+	fn bezier<'a>(poles: impl IntoIterator<Item = &'a DVec3>) -> Result<Self, Error>;
+
 	/// Cubic B-spline curve interpolating the given data points.
 	///
 	/// **The points are interpolation targets, not control points.** OCCT's

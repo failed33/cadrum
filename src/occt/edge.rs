@@ -24,10 +24,12 @@ impl Edge {
 	}
 
 	/// The point and unit tangent `distance` along the forward
-	/// parametrisation, exactly; `None` where the abscissa cannot be placed.
-	pub fn at_length(&self, distance: f64) -> Option<(DVec3, DVec3)> {
-		let mut station = [0.0; 6];
-		ffi::edge_at_length(&self.inner, distance, &mut station).then(|| (DVec3::new(station[0], station[1], station[2]), DVec3::new(station[3], station[4], station[5])))
+	/// parametrisation, exactly, with the fraction of the parameter range it
+	/// stands at (a Bézier edge's own parameter); `None` where the abscissa
+	/// cannot be placed.
+	pub fn at_length(&self, distance: f64) -> Option<(DVec3, DVec3, f64)> {
+		let mut station = [0.0; 7];
+		ffi::edge_at_length(&self.inner, distance, &mut station).then(|| (DVec3::new(station[0], station[1], station[2]), DVec3::new(station[3], station[4], station[5]), station[6]))
 	}
 
 	pub fn is_reversed(&self) -> bool {
@@ -191,6 +193,11 @@ impl EdgeStruct for Edge {
 	fn arc_3pts(start: DVec3, mid: DVec3, end: DVec3) -> Result<Self, Error> {
 		let inner = ffi::make_arc_edge(start.x, start.y, start.z, mid.x, mid.y, mid.z, end.x, end.y, end.z);
 		Edge::try_from_ffi(inner, format!("arc_3pts: collinear or degenerate points (start={start:?}, mid={mid:?}, end={end:?})"))
+	}
+
+	fn bezier<'a>(poles: impl IntoIterator<Item = &'a DVec3>) -> Result<Self, Error> {
+		let coords: Vec<f64> = poles.into_iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+		Edge::try_from_ffi(ffi::make_bezier_edge(&coords), format!("bezier: need 2 to 25 finite poles, got {}", coords.len() / 3))
 	}
 
 	fn bspline<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd) -> Result<Self, Error> {

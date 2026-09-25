@@ -95,6 +95,9 @@ impl Edge {
 	pub fn arc_3pts(start: DVec3, mid: DVec3, end: DVec3) -> Result<crate::Edge, Error> {
 		<Self as crate::traits::EdgeStruct>::arc_3pts(start, mid, end)
 	}
+	pub fn bezier<'a>(poles: impl IntoIterator<Item = &'a DVec3>) -> Result<crate::Edge, Error> {
+		<Self as crate::traits::EdgeStruct>::bezier(poles)
+	}
 	pub fn bspline<'a>(points: impl IntoIterator<Item = &'a DVec3>, end: BSplineEnd) -> Result<crate::Edge, Error> {
 		<Self as crate::traits::EdgeStruct>::bspline(points, end)
 	}

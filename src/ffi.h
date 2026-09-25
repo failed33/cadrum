@@ -117,9 +117,13 @@ struct TopologyData;
 struct NearestData;
 TopologyData shape_topology(const TopoDS_Shape& shape);
 NearestData shape_nearest(const TopoDS_Shape& shape, double x, double y, double z);
-// Point and unit tangent at `distance` along the edge's forward
-// parametrisation, into six doubles. False when the abscissa cannot be placed.
+// Point, unit tangent and fraction of the parameter range at `distance` along
+// the edge's forward parametrisation, into seven doubles. False when the
+// abscissa cannot be placed.
 bool edge_at_length(const TopoDS_Edge& edge, double distance, rust::Slice<double> out);
+// The scale law a pipe sweep builds from (station, value) samples, evaluated at
+// each of `at`. False when OCCT cannot interpolate the samples.
+bool law_interpol_values(rust::Slice<const double> stations, rust::Slice<const double> values, bool periodic, rust::Slice<const double> at, rust::Slice<double> out);
 
 // ==================== Topology enumeration ====================
 
@@ -185,6 +189,9 @@ std::unique_ptr<TopoDS_Edge> make_arc_edge(
     double sx, double sy, double sz,
     double mx, double my, double mz,
     double ex, double ey, double ez);
+
+// Bezier edge over 2..=25 control points (flat xyz triples). Returns nullptr on failure.
+std::unique_ptr<TopoDS_Edge> make_bezier_edge(rust::Slice<const double> coords);
 
 // Cubic B-spline edge interpolating data points.
 //

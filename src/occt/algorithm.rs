@@ -190,6 +190,22 @@ pub struct LawSample {
 	pub value: f64,
 }
 
+impl LawSample {
+	/// The law OCCT interpolates through `law` — the same `Law_Interpol` a
+	/// [`Algorithm::PipeShell`] row scales its section by — at each of `at`.
+	/// `periodic` closes the law, as a closed spine does.
+	pub fn interpolate(law: &[LawSample], periodic: bool, at: &[f64]) -> Result<Vec<f64>, Error> {
+		let stations: Vec<f64> = law.iter().map(|sample| sample.station).collect();
+		let values: Vec<f64> = law.iter().map(|sample| sample.value).collect();
+		let mut out = vec![0.0; at.len()];
+		if ffi::law_interpol_values(&stations, &values, periodic, at, &mut out) {
+			Ok(out)
+		} else {
+			Err(Error::Refused(format!("law: cannot interpolate {} samples", law.len())))
+		}
+	}
+}
+
 /// How a [`Algorithm::Chamfer`] is measured at each of its edges.
 ///
 /// Both asymmetric forms measure their first parameter ON a reference face,

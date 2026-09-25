@@ -122,7 +122,7 @@ C++17 compiler (GCC, Clang, or MSVC) and CMake.
 | Area | Methods |
 |---|---|
 | **Primitives** | `Solid::cube`, `Solid::sphere`, `Solid::cylinder`, `Solid::cone`, `Solid::torus`, `Solid::half_space` |
-| **Curves** | `Edge::line`, `Edge::arc_3pts`, `Edge::circle`, `Edge::polygon`, `Edge::helix`, `Edge::bspline` |
+| **Curves** | `Edge::line`, `Edge::arc_3pts`, `Edge::circle`, `Edge::polygon`, `Edge::helix`, `Edge::bspline`, `Edge::bezier` |
 | **Surfacing** | `Solid::extrude`, `Solid::sweep`, `Solid::loft`, `Solid::bspline`, `Solid::sew` |
 | **Editing** | `Solid::shell`, `Solid::offset`, `Solid::fillet_edges`, `Solid::chamfer_edges`, `Solid::clean` |
 | **Queries** | `Solid::volume`, `Solid::area`, `Solid::center`, `Solid::inertia`, `Solid::bounding_box`, `Solid::contains` |
