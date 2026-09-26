@@ -24,12 +24,10 @@ impl Edge {
 	}
 
 	/// The point and unit tangent `distance` along the forward
-	/// parametrisation, exactly, with the fraction of the parameter range it
-	/// stands at (a Bézier edge's own parameter); `None` where the abscissa
-	/// cannot be placed.
-	pub fn at_length(&self, distance: f64) -> Option<(DVec3, DVec3, f64)> {
-		let mut station = [0.0; 7];
-		ffi::edge_at_length(&self.inner, distance, &mut station).then(|| (DVec3::new(station[0], station[1], station[2]), DVec3::new(station[3], station[4], station[5]), station[6]))
+	/// parametrisation, exactly; `None` where the abscissa cannot be placed.
+	pub fn at_length(&self, distance: f64) -> Option<(DVec3, DVec3)> {
+		let mut station = [0.0; 6];
+		ffi::edge_at_length(&self.inner, distance, &mut station).then(|| (DVec3::new(station[0], station[1], station[2]), DVec3::new(station[3], station[4], station[5])))
 	}
 
 	pub fn is_reversed(&self) -> bool {

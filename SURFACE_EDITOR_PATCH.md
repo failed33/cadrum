@@ -87,6 +87,16 @@ station), `Shape::nearest` (`BRepExtrema_DistShapeShape` support and closest
 point, with the face normal at the hit), `Shape::planar_region` reporting
 which face edge copies which wire edge, and the mass properties.
 
+## Bézier edges and law sampling
+
+`Edge::bezier` builds an edge on a `Geom_BezierCurve` over 2..=25 poles,
+OCCT's pole count; any other count, or a curve OCCT refuses, is an `Error`.
+`LawSample::interpolate` evaluates the `Law_Interpol` a
+`Algorithm::PipeShell` row scales its section by, at any stations and closed
+for a periodic spine. It only reads the law OCCT builds; no geometry is
+computed here. With `Edge::at_length`, a host samples the exact curve and
+section law a pipe sweep builds without tessellating the result.
+
 ## STEP I/O
 
 STEP reading and writing go through OCCT's plain `STEPControl_Reader` and

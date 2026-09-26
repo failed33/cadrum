@@ -329,7 +329,7 @@ NearestData shape_nearest(const TopoDS_Shape& shape, double x, double y, double 
 }
 
 bool edge_at_length(const TopoDS_Edge& edge, double distance, rust::Slice<double> out) {
-    if (out.size() != 7 || !std::isfinite(distance)) return false;
+    if (out.size() != 6 || !std::isfinite(distance)) return false;
     BRepAdaptor_Curve curve(edge);
     const double first = curve.FirstParameter();
     const double last = curve.LastParameter();
@@ -342,7 +342,6 @@ bool edge_at_length(const TopoDS_Edge& edge, double distance, rust::Slice<double
     const Xyz tangent = unit_or_zero(derivative);
     out[0] = point.X(); out[1] = point.Y(); out[2] = point.Z();
     out[3] = tangent.x; out[4] = tangent.y; out[5] = tangent.z;
-    out[6] = last > first ? (parameter - first) / (last - first) : 0.0;
     return true;
 }
 

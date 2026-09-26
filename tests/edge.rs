@@ -90,12 +90,12 @@ fn bezier_passes_its_end_poles_and_its_exact_apex() {
 }
 
 #[test]
-fn at_length_states_the_fraction_of_the_parameter_range_it_reached() {
+fn at_length_places_the_point_the_arc_length_reaches() {
 	let line = Edge::line(DVec3::ZERO, DVec3::new(8.0, 0.0, 0.0)).unwrap();
-	let (point, _, parameter) = line.at_length(2.0).unwrap();
+	let (point, tangent) = line.at_length(2.0).unwrap();
 	assert!(approx_eq(point, DVec3::new(2.0, 0.0, 0.0), TOL), "{point:?}");
-	assert!((parameter - 0.25).abs() < TOL, "{parameter}");
+	assert!(approx_eq(tangent, DVec3::X, TOL), "{tangent:?}");
 	let poles = [DVec3::ZERO, DVec3::new(0.0, 1.0, 0.0), DVec3::new(2.0, 1.0, 0.0), DVec3::new(2.0, 0.0, 0.0)];
-	let (start, _, first) = Edge::bezier(poles.iter()).unwrap().at_length(0.0).unwrap();
-	assert!(approx_eq(start, poles[0], TOL) && first.abs() < TOL, "{first}");
+	let (start, _) = Edge::bezier(poles.iter()).unwrap().at_length(0.0).unwrap();
+	assert!(approx_eq(start, poles[0], TOL), "{start:?}");
 }
